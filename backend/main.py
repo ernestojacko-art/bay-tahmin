@@ -1,18 +1,15 @@
 import os
-
 import httpx
 from fastapi import FastAPI, HTTPException
 
 app = FastAPI(title="Bay Tahmin API")
 
-API_FOOTBALL_URL = "https://v3.football.api-sports.io"
-API_FOOTBALL_KEY = os.getenv("API_FOOTBALL_KEY")
-@app.get("/debug-env")
-def debug_env():
-    return {
-        "api_key_exists": API_FOOTBALL_KEY is not None,
-        "api_key_length": len(API_FOOTBALL_KEY) if API_FOOTBALL_KEY else 0
-    }
+NOSYAPI_BASE_URL = os.getenv(
+    "NOSYAPI_BASE_URL",
+    "https://www.nosyapi.com/apiv2/service"
+)
+
+NOSYAPI_KEY = os.getenv("NOSYAPI_KEY")
 
 
 @app.get("/")
@@ -33,31 +30,33 @@ def health():
 
 @app.get("/matches")
 async def get_matches(date: str | None = None):
-    if not API_FOOTBALL_KEY:
+
+    if not NOSYAPI_KEY:
         raise HTTPException(
             status_code=500,
-            detail="API_FOOTBALL_KEY environment variable bulunamadı."
+            detail="NOSYAPI_KEY environment variable bulunamadı."
         )
 
-    params = {}
+    params = {
+        "apiKey": NOSYAPI_KEY,
+        "type": 1
+    }
+
     if date:
         params["date"] = date
 
-    headers = {
-        "x-apisports-key": API_FOOTBALL_KEY
-    }
+    url = f"{NOSYAPI_BASE_URL}/bettable-matches"
 
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(
-            f"{API_FOOTBALL_URL}/fixtures",
-            headers=headers,
+            url,
             params=params
         )
 
     if response.status_code != 200:
         raise HTTPException(
             status_code=response.status_code,
-            detail="API-Football isteği başarısız oldu."
+            detail=f"NosyAPI isteği başarısız oldu: {response.text}"
         )
 
     return response.json()
