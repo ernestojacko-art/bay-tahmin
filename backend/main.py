@@ -7,6 +7,12 @@ app = FastAPI(title="Bay Tahmin API")
 
 API_FOOTBALL_URL = "https://v3.football.api-sports.io"
 API_FOOTBALL_KEY = os.getenv("API_FOOTBALL_KEY")
+@app.get("/debug-env")
+def debug_env():
+    return {
+        "api_key_exists": API_FOOTBALL_KEY is not None,
+        "api_key_length": len(API_FOOTBALL_KEY) if API_FOOTBALL_KEY else 0
+    }
 
 
 @app.get("/")
