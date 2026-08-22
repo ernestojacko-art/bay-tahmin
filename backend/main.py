@@ -2,6 +2,7 @@ import os
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from google import genai
 
 app = FastAPI(title="Bay Tahmin API")
 app.add_middleware(
@@ -18,7 +19,9 @@ NOSYAPI_BASE_URL = os.getenv(
 )
 
 NOSYAPI_KEY = os.getenv("NOSYAPI_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
+gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 @app.get("/")
 def root():
@@ -99,3 +102,66 @@ async def get_match_detail(match_id: int):
 @app.get("/match/{match_id}")
 async def get_match_detail_alias(match_id: int):
     return await get_match_detail(match_id)
+
+@app.get("/ai/analyze/{match_id}")
+async def analyze_match_with_ai(match_id: int):
+    if not GEMINI_API_KEY or not gemini_client:
+        raise HTTPException(
+            status_code=500,
+            detail="GEMINI_API_KEY environment variable bulunamadı."
+        )
+
+    # Önce gerçek maç verisini NOSYAPI'den al
+    match_data = await get_match_detail(match_id)
+
+    prompt = f"""
+Sen "Bay Tahmin AI" adlı profesyonel bir futbol maç analiz asistanısın.
+
+Aşağıdaki veriler gerçek maç verileridir. 
+Verilerde olmayan hiçbir bilgiyi uydurma.
+
+MAÇ VERİSİ:
+{match_data}
+
+Bu maçı detaylı şekilde analiz et.
+
+Şu başlıkları mutlaka oluştur:
+
+1. MAÇ ÖZETİ
+2. TAKIMLARIN DURUMU
+3. MAÇIN OLASI SENARYOSU
+4. MS TAHMİNİ
+5. KG TAHMİNİ
+6. ALT / ÜST TAHMİNİ
+7. İLK YARI TAHMİNİ
+8. HT/FT TAHMİNİ
+9. SÜRPRİZ İHTİMALİ
+10. EN GÜVENİLİR TAHMİNLER
+11. RİSK SEVİYESİ
+12. TAHMİN GEREKÇESİ
+
+Her tahmin için kısa ama mantıklı bir gerekçe ver.
+
+Kesin sonuç garantisi verme.
+Tahminleri olasılık ve risk mantığıyla değerlendir.
+
+Yanıtı Türkçe ver.
+"""
+
+    try:
+        response = gemini_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt
+        )
+
+        return {
+            "status": "success",
+            "matchID": match_id,
+            "analysis": response.text
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Gemini analiz hatası: {str(e)}"
+        )
