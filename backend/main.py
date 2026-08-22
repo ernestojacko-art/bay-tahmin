@@ -176,73 +176,68 @@ Yanıt Türkçe olmalıdır.
         response = gemini_client.models.generate_content(
             model="gemini-3.6-flash",
             contents=prompt,
-            config={
-                "response_format": {
-                    "text": {
-                        "mime_type": "application/json",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "mac_ozeti": {
-                                    "type": "string"
-                                },
-                                "takimlarin_durumu": {
-                                    "type": "string"
-                                },
-                                "olasi_senaryo": {
-                                    "type": "string"
-                                },
-                                "ms_tahmini": {
-                                    "type": "string"
-                                },
-                                "kg_tahmini": {
-                                    "type": "string"
-                                },
-                                "alt_ust_tahmini": {
-                                    "type": "string"
-                                },
-                                "ilk_yari_tahmini": {
-                                    "type": "string"
-                                },
-                                "ht_ft_tahmini": {
-                                    "type": "string"
-                                },
-                                "surpriz_ihtimali": {
-                                    "type": "string"
-                                },
-                                "en_guvenilir_tahminler": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "string"
-                                    }
-                                },
-                                "risk_seviyesi": {
-                                    "type": "string"
-                                },
-                                "tahmin_gerekcesi": {
-                                    "type": "string"
-                                }
-                            },
-                            "required": [
-                                "mac_ozeti",
-                                "takimlarin_durumu",
-                                "olasi_senaryo",
-                                "ms_tahmini",
-                                "kg_tahmini",
-                                "alt_ust_tahmini",
-                                "ilk_yari_tahmini",
-                                "ht_ft_tahmini",
-                                "surpriz_ihtimali",
-                                "en_guvenilir_tahminler",
-                                "risk_seviyesi",
-                                "tahmin_gerekcesi"
-                            ]
-                        }
+              config={
+        "response_mime_type": "application/json",
+        "response_schema": {
+            "type": "object",
+            "properties": {
+                "mac_ozeti": {
+                    "type": "string"
+                },
+                "takimlarin_durumu": {
+                    "type": "string"
+                },
+                "olasi_senaryo": {
+                    "type": "string"
+                },
+                "ms_tahmini": {
+                    "type": "string"
+                },
+                "kg_tahmini": {
+                    "type": "string"
+                },
+                "alt_ust_tahmini": {
+                    "type": "string"
+                },
+                "ilk_yari_tahmini": {
+                    "type": "string"
+                },
+                "ht_ft_tahmini": {
+                    "type": "string"
+                },
+                "surpriz_ihtimali": {
+                    "type": "string"
+                },
+                "en_guvenilir_tahminler": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
                     }
+                },
+                "risk_seviyesi": {
+                    "type": "string"
+                },
+                "tahmin_gerekcesi": {
+                    "type": "string"
                 }
-            }
-        )
-
+            },
+            "required": [
+                "mac_ozeti",
+                "takimlarin_durumu",
+                "olasi_senaryo",
+                "ms_tahmini",
+                "kg_tahmini",
+                "alt_ust_tahmini",
+                "ilk_yari_tahmini",
+                "ht_ft_tahmini",
+                "surpriz_ihtimali",
+                "en_guvenilir_tahminler",
+                "risk_seviyesi",
+                "tahmin_gerekcesi"
+            ]
+        }
+    }
+)
         analysis = json.loads(response.text)
 
         return {
