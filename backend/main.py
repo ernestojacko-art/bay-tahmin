@@ -1,4 +1,5 @@
 import os
+import json
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -114,18 +115,18 @@ async def analyze_match_with_ai(match_id: int):
     # Önce gerçek maç verisini NOSYAPI'den al
     match_data = await get_match_detail(match_id)
 
-    prompt = f"""
+      prompt = f"""
 Sen "Bay Tahmin AI" adlı profesyonel bir futbol maç analiz asistanısın.
 
-Aşağıdaki veriler gerçek maç verileridir. 
-Verilerde olmayan hiçbir bilgiyi uydurma.
+Aşağıdaki veriler gerçek maç verileridir.
+Verilerde bulunmayan hiçbir bilgiyi uydurma.
 
 MAÇ VERİSİ:
 {match_data}
 
-Bu maçı detaylı şekilde analiz et.
+Bu maçı detaylı ve profesyonel şekilde analiz et.
 
-Şu başlıkları mutlaka oluştur:
+Analizde özellikle şunları değerlendir:
 
 1. MAÇ ÖZETİ
 2. TAKIMLARIN DURUMU
@@ -145,19 +146,109 @@ Her tahmin için kısa ama mantıklı bir gerekçe ver.
 Kesin sonuç garantisi verme.
 Tahminleri olasılık ve risk mantığıyla değerlendir.
 
-Yanıtı Türkçe ver.
+Özellikle sürprize açık durumları belirt.
+Takımların formu, ev/deplasman performansı, oranlar, gol beklentisi,
+maç senaryosu ve mevcut gerçek verileri birlikte değerlendir.
+
+Çıktıyı SADECE JSON formatında ver.
+JSON dışında hiçbir açıklama, markdown veya kod bloğu kullanma.
+
+JSON şu alanları mutlaka içermelidir:
+- mac_ozeti
+- takimlarin_durumu
+- olasi_senaryo
+- ms_tahmini
+- kg_tahmini
+- alt_ust_tahmini
+- ilk_yari_tahmini
+- ht_ft_tahmini
+- surpriz_ihtimali
+- en_guvenilir_tahminler
+- risk_seviyesi
+- tahmin_gerekcesi
+
+"en_guvenilir_tahminler" bir liste olmalıdır.
+
+Yanıt Türkçe olmalıdır.
 """
 
     try:
         response = gemini_client.models.generate_content(
             model="gemini-3.6-flash",
-            contents=prompt
+            contents=prompt,
+            config={
+                "response_format": {
+                    "text": {
+                        "mime_type": "application/json",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "mac_ozeti": {
+                                    "type": "string"
+                                },
+                                "takimlarin_durumu": {
+                                    "type": "string"
+                                },
+                                "olasi_senaryo": {
+                                    "type": "string"
+                                },
+                                "ms_tahmini": {
+                                    "type": "string"
+                                },
+                                "kg_tahmini": {
+                                    "type": "string"
+                                },
+                                "alt_ust_tahmini": {
+                                    "type": "string"
+                                },
+                                "ilk_yari_tahmini": {
+                                    "type": "string"
+                                },
+                                "ht_ft_tahmini": {
+                                    "type": "string"
+                                },
+                                "surpriz_ihtimali": {
+                                    "type": "string"
+                                },
+                                "en_guvenilir_tahminler": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    }
+                                },
+                                "risk_seviyesi": {
+                                    "type": "string"
+                                },
+                                "tahmin_gerekcesi": {
+                                    "type": "string"
+                                }
+                            },
+                            "required": [
+                                "mac_ozeti",
+                                "takimlarin_durumu",
+                                "olasi_senaryo",
+                                "ms_tahmini",
+                                "kg_tahmini",
+                                "alt_ust_tahmini",
+                                "ilk_yari_tahmini",
+                                "ht_ft_tahmini",
+                                "surpriz_ihtimali",
+                                "en_guvenilir_tahminler",
+                                "risk_seviyesi",
+                                "tahmin_gerekcesi"
+                            ]
+                        }
+                    }
+                }
+            }
         )
+
+        analysis = json.loads(response.text)
 
         return {
             "status": "success",
             "matchID": match_id,
-            "analysis": response.text
+            "analysis": analysis
         }
 
     except Exception as e:
