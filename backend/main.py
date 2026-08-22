@@ -96,3 +96,6 @@ async def get_match_detail(match_id: int):
         )
 
     return response.json()
+@app.get("/match/{match_id}")
+async def get_match_detail_alias(match_id: int):
+    return await get_match_detail(match_id)
