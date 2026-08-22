@@ -115,7 +115,7 @@ async def analyze_match_with_ai(match_id: int):
     # Önce gerçek maç verisini NOSYAPI'den al
     match_data = await get_match_detail(match_id)
 
-      prompt = f"""
+    prompt = f"""
 Sen "Bay Tahmin AI" adlı profesyonel bir futbol maç analiz asistanısın.
 
 Aşağıdaki veriler gerçek maç verileridir.
