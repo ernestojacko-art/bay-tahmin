@@ -68,3 +68,31 @@ async def get_matches(date: str | None = None):
         )
 
     return response.json()
+@app.get("/mac/{match_id}")
+async def get_match_detail(match_id: int):
+    if not NOSYAPI_KEY:
+        raise HTTPException(
+            status_code=500,
+            detail="NOSYAPI_KEY environment variable bulunamadı."
+        )
+
+    params = {
+        "apiKey": NOSYAPI_KEY,
+        "matchID": match_id
+    }
+
+    url = f"{NOSYAPI_BASE_URL}/bettable-matches/details"
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(
+            url,
+            params=params
+        )
+
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail=f"NOSYAPI maç detay isteği başarısız oldu: {response.text}"
+        )
+
+    return response.json()
