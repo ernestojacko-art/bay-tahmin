@@ -18,11 +18,16 @@ app.add_middleware(
 NOSYAPI_BASE_URL = os.getenv("NOSYAPI_BASE_URL", "https://www.nosyapi.com/apiv2/service").rstrip("/")
 NOSYAPI_KEY = os.getenv("NOSYAPI_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+# 3.5 Flash-Lite is the current cost-efficient GA model for high-volume workloads.
+# If an old 2.5 model is still present in Render env, automatically migrate it.
+_configured_model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+GEMINI_MODEL = "gemini-3.5-flash-lite" if _configured_model in {"gemini-2.5-flash", "gemini-2.5-flash-lite"} else _configured_model
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
 @app.get("/")
 def root():
-    return {"status": "online", "agent": "Bay Tahmin", "ai_engine": "Football AI Agent", "message": "Bay Tahmin API çalışıyor."}
+    return {"status": "online", "agent": "Bay Tahmin", "ai_engine": "Gemini", "message": "Bay Tahmin API çalışıyor."}
 
 @app.get("/health")
 def health():
@@ -32,6 +37,7 @@ def health():
         "gemini_configured": bool(GEMINI_API_KEY),
         "ai_engine": "Gemini",
         "gemini_model": GEMINI_MODEL,
+        "analysis_cache_configured": bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY),
     }
 
 async def nosy_get(path: str, params: dict):
@@ -76,6 +82,55 @@ def compact_data(value, max_chars=30000):
     except Exception:
         return str(value)[:max_chars]
 
+async def cache_get(match_id: int):
+    """Return a cached AI analysis, if Supabase cache is configured."""
+    if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
+        return None
+    url = f"{SUPABASE_URL}/rest/v1/ai_predictions"
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+    }
+    params = {"match_id": f"eq.{match_id}", "select": "analysis,created_at", "limit": "1"}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(url, headers=headers, params=params)
+        if response.status_code != 200:
+            return None
+        rows = response.json()
+        if rows and rows[0].get("analysis"):
+            raw = rows[0]["analysis"]
+            try:
+                return json.loads(raw)
+            except (TypeError, json.JSONDecodeError):
+                return {"mac_ozeti": str(raw)}
+    except (httpx.HTTPError, ValueError):
+        return None
+    return None
+
+async def cache_put(match_id: int, analysis: dict):
+    """Persist an AI analysis so subsequent users reuse it."""
+    if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
+        return
+    url = f"{SUPABASE_URL}/rest/v1/ai_predictions"
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "resolution=merge-duplicates,return=minimal",
+    }
+    body = {
+        "match_key": str(match_id),
+        "match_id": match_id,
+        "analysis": json.dumps(analysis, ensure_ascii=False),
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            await client.post(url, headers=headers, params={"on_conflict": "match_key"}, json=body)
+    except httpx.HTTPError:
+        # Cache failure must never break an otherwise valid AI response.
+        pass
+
 async def gemini_generate(prompt: str) -> str:
     if not GEMINI_API_KEY:
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY environment variable bulunamadı.")
@@ -104,6 +159,12 @@ risk_seviyesi (Düşük/Orta/Yüksek), tahmin_gerekcesi.
 
 @app.get("/ai/analyze/{match_id}")
 async def analyze_match_with_ai(match_id: int):
+    # 1) Reuse cached analysis whenever available.
+    cached = await cache_get(match_id)
+    if cached is not None:
+        return {"analysis": cached, "source": "cache"}
+
+    # 2) Only call Gemini when this match has no cached analysis.
     match_data = await get_match_detail(match_id)
     prompt = ANALYSIS_PROMPT + "\nSEÇİLİ MAÇ VERİSİ:\n" + compact_data(match_data)
     raw = await gemini_generate(prompt)
@@ -116,7 +177,10 @@ async def analyze_match_with_ai(match_id: int):
         analysis = json.loads(cleaned)
     except json.JSONDecodeError:
         analysis = {"mac_ozeti": cleaned, "tahmin_gerekcesi": cleaned}
-    return {"analysis": analysis}
+
+    # 3) Save the result for the next user/request.
+    await cache_put(match_id, analysis)
+    return {"analysis": analysis, "source": "gemini"}
 
 @app.post("/matches/{match_id}/chat")
 async def chat_about_match(match_id: int, request: Request):
@@ -129,6 +193,7 @@ async def chat_about_match(match_id: int, request: Request):
     if not message:
         raise HTTPException(status_code=400, detail="Mesaj boş olamaz.")
 
+    # Chat is generated only when the user explicitly asks a question.
     match_data = await get_match_detail(match_id)
     prompt = f"""
 Sen Bay Tahmin adlı futbol analiz sohbet ajanısın.
