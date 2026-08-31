@@ -15,6 +15,7 @@ app.add_middleware(
 NOSYAPI_BASE_URL = os.getenv("NOSYAPI_BASE_URL", "https://www.nosyapi.com/apiv2/service").rstrip("/")
 NOSYAPI_KEY = os.getenv("NOSYAPI_KEY")
 FOOTBALL_AI_AGENT_BASE_URL = os.getenv("FOOTBALL_AI_AGENT_BASE_URL", "https://futbol-ajan.vercel.app").rstrip("/")
+VERCEL_PROTECTION_BYPASS_SECRET = os.getenv("VERCEL_PROTECTION_BYPASS_SECRET")
 
 @app.get("/")
 def root():
@@ -22,7 +23,13 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "healthy", "nosyapi_configured": bool(NOSYAPI_KEY), "gemini_configured": False, "football_ai_agent": FOOTBALL_AI_AGENT_BASE_URL}
+    return {
+        "status": "healthy",
+        "nosyapi_configured": bool(NOSYAPI_KEY),
+        "gemini_configured": False,
+        "football_ai_agent": FOOTBALL_AI_AGENT_BASE_URL,
+        "vercel_bypass_configured": bool(VERCEL_PROTECTION_BYPASS_SECRET),
+    }
 
 async def nosy_get(path: str, params: dict):
     if not NOSYAPI_KEY:
@@ -64,8 +71,7 @@ async def football_agent_request(action: str, *, match_id: int | None = None, qu
     payload = {"action": action}
     if match_id is not None:
         payload["match_id"] = match_id
-    # Some deployed Agent revisions validate `question` for every POST action.
-    # Sending a harmless analysis prompt keeps old and new Agent deployments compatible.
+
     if action == "analyze_match" and question is None:
         question = "Bu maçı analiz et ve mevcut futbol verilerine göre kapsamlı analiz ile tahminlerini üret."
     if question is not None:
@@ -74,17 +80,32 @@ async def football_agent_request(action: str, *, match_id: int | None = None, qu
         payload["history"] = history
 
     url = f"{FOOTBALL_AI_AGENT_BASE_URL}/api"
+    headers = {}
+    if VERCEL_PROTECTION_BYPASS_SECRET:
+        headers["x-vercel-protection-bypass"] = VERCEL_PROTECTION_BYPASS_SECRET
+
     try:
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            response = await client.post(url, params={"action": action}, json=payload)
+        async with httpx.AsyncClient(timeout=90.0, follow_redirects=True) as client:
+            response = await client.post(
+                url,
+                params={"action": action},
+                json=payload,
+                headers=headers,
+            )
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"Football AI Agent bağlantı hatası: {exc}") from exc
+
     if response.status_code != 200:
-        raise HTTPException(status_code=502, detail=f"Football AI Agent isteği başarısız oldu ({response.status_code}): {response.text[:500]}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Football AI Agent isteği başarısız oldu ({response.status_code}): {response.text[:500]}",
+        )
+
     try:
         data = response.json()
     except ValueError as exc:
         raise HTTPException(status_code=502, detail="Football AI Agent geçerli JSON döndürmedi.") from exc
+
     if data.get("status") == "error":
         raise HTTPException(status_code=502, detail=data.get("message", "Football AI Agent hata döndürdü."))
     return data
@@ -99,8 +120,16 @@ async def chat_about_match(match_id: int, request: Request):
         payload = await request.json()
     except Exception:
         payload = {}
+
     message = str(payload.get("message") or payload.get("question") or "").strip()
     history = payload.get("history") or []
+
     if not message:
         raise HTTPException(status_code=400, detail="Mesaj boş olamaz.")
-    return await football_agent_request("chat_match", match_id=match_id, question=message, history=history)
+
+    return await football_agent_request(
+        "chat_match",
+        match_id=match_id,
+        question=message,
+        history=history,
+    )
