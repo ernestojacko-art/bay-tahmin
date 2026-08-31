@@ -1,0 +1,1 @@
+Bay Tahmin expert system rules are stored here for the backend implementation. Requested markets must be projected from available real signals when possible; absence of a named market is not a reason to refuse. Never invent data.
