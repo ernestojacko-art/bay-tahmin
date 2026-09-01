@@ -7,32 +7,54 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from google import genai
 
-app = FastAPI(title="Futbol Ajanı API")
+app = FastAPI(title="Bay Tahmin Expert API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 
 NOSYAPI_BASE_URL = os.getenv("NOSYAPI_BASE_URL", "https://www.nosyapi.com/apiv2/service").rstrip("/")
 NOSYAPI_KEY = os.getenv("NOSYAPI_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-_configured_model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
-GEMINI_MODEL = "gemini-3.5-flash-lite" if _configured_model in {"gemini-2.5-flash", "gemini-2.5-flash-lite"} else _configured_model
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
+EXPERT_CORE = """
+Sen Bay Tahmin'sin: basit bir chatbot değil, profesyonel futbol analiz uzmanısın.
+
+TEMEL GÖREV:
+- Gerçek maç verilerini analiz et, karşılaştır ve veri destekli futbol projeksiyonları üret.
+- Hazır bir bahis marketinin veri içinde doğrudan bulunmaması analizi reddetme sebebi değildir.
+- Örneğin kullanıcı "İlk Yarı 1.5 Üst" isterse mevcut gerçek sinyallerden proje üret: ilk yarı skor eğilimleri varsa onları, yoksa son maç gol profili, hücum-savunma dengesi, ev/deplasman karakteri, lig gol eğilimi, favori dengesi ve diğer mevcut sinyalleri birlikte değerlendir.
+- Uydurma istatistik, oran veya kesin sonuç üretme. Eksik veri varsa güven skorunu düşür ve belirsizliği açıkça belirt.
+- Kullanıcı tam olarak kaç aday istediyse, veri uygunsa o kadar gerçek aday ver.
+- Her öneride: Tahmin | Güven (0-10) | Risk | Kısa veri gerekçesi kullan.
+- Güven skoru başarı garantisi değildir.
+- 8.5+ güçlü, 7.0-8.4 değerlendirilebilir, 6.0-6.9 riskli, 6 altı zayıf kabul edilir.
+- MS, Çifte Şans, KG, Alt/Üst, İlk Yarı, HT/FT, gol eğilimleri ve sürpriz adaylar hakkında veri destekli projeksiyon yap.
+- Kullanıcı kombinasyon isterse resmi kupon oluşturma; "önerilen tahmin listesi" olarak sun.
+- "Sistemimde bu market yok" diyerek konuşmayı kesme. Önce eldeki sinyallerden uzman çıkarımı yap.
+- Türkçe, net, profesyonel ve kullanıcı odaklı cevap ver.
+"""
+
 @app.get("/")
 def root():
-    return {"status": "online", "platform": "Futbol Ajanı", "agent": "Bay Tahmin", "ai_engine": "Gemini"}
+    return {"status": "online", "agent": "Bay Tahmin", "mode": "expert"}
 
 @app.get("/health")
 def health():
-    return {"status": "healthy", "nosyapi_configured": bool(NOSYAPI_KEY), "gemini_configured": bool(GEMINI_API_KEY), "gemini_model": GEMINI_MODEL, "analysis_cache_configured": bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY)}
+    return {
+        "status": "healthy",
+        "nosyapi_configured": bool(NOSYAPI_KEY),
+        "gemini_configured": bool(GEMINI_API_KEY),
+        "gemini_model": GEMINI_MODEL,
+        "analysis_cache_configured": bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY),
+    }
 
 async def nosy_get(path: str, params: dict):
     if not NOSYAPI_KEY:
         raise HTTPException(status_code=500, detail="NOSYAPI_KEY environment variable bulunamadı.")
-    url = f"{NOSYAPI_BASE_URL}/{path.lstrip('/')}"
     try:
         async with httpx.AsyncClient(timeout=45.0) as client:
-            response = await client.get(url, params={**params, "apiKey": NOSYAPI_KEY})
+            response = await client.get(f"{NOSYAPI_BASE_URL}/{path.lstrip('/')}", params={**params, "apiKey": NOSYAPI_KEY})
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"NOSYAPI bağlantı hatası: {exc}") from exc
     if response.status_code != 200:
@@ -44,10 +66,7 @@ async def nosy_get(path: str, params: dict):
 
 @app.get("/matches")
 async def get_matches(date: str | None = None):
-    params = {"type": 1}
-    if date:
-        params["date"] = date
-    return await nosy_get("bettable-matches", params)
+    return await nosy_get("bettable-matches", {"type": 1, **({"date": date} if date else {})})
 
 @app.get("/mac/{match_id}")
 async def get_match_detail(match_id: int):
@@ -61,7 +80,7 @@ async def get_match_detail_alias(match_id: int):
 def get_leagues():
     return []
 
-def compact_data(value, max_chars=30000):
+def compact_data(value, max_chars=40000):
     try:
         return json.dumps(value, ensure_ascii=False, default=str)[:max_chars]
     except Exception:
@@ -70,34 +89,36 @@ def compact_data(value, max_chars=30000):
 async def cache_get(match_id: int):
     if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
         return None
-    url = f"{SUPABASE_URL}/rest/v1/ai_predictions"
     headers = {"apikey": SUPABASE_SERVICE_ROLE_KEY, "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}"}
-    params = {"match_id": f"eq.{match_id}", "select": "analysis,created_at", "limit": "1"}
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(url, headers=headers, params=params)
-        if response.status_code != 200:
-            return None
-        rows = response.json()
-        if rows and rows[0].get("analysis"):
-            raw = rows[0]["analysis"]
-            try:
-                return json.loads(raw)
-            except (TypeError, json.JSONDecodeError):
-                return {"mac_ozeti": str(raw)}
-    except (httpx.HTTPError, ValueError):
-        return None
+            response = await client.get(
+                f"{SUPABASE_URL}/rest/v1/ai_predictions",
+                headers=headers,
+                params={"match_key": f"eq.{match_id}", "select": "analysis,created_at", "limit": "1"},
+            )
+        if response.status_code == 200:
+            rows = response.json()
+            if rows and rows[0].get("analysis"):
+                raw = rows[0]["analysis"]
+                return json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        pass
     return None
 
 async def cache_put(match_id: int, analysis: dict):
     if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
         return
-    url = f"{SUPABASE_URL}/rest/v1/ai_predictions"
-    headers = {"apikey": SUPABASE_SERVICE_ROLE_KEY, "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}", "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates,return=minimal"}
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "resolution=merge-duplicates,return=minimal",
+    }
     body = {"match_key": str(match_id), "match_id": match_id, "analysis": json.dumps(analysis, ensure_ascii=False)}
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            await client.post(url, headers=headers, params={"on_conflict": "match_key"}, json=body)
+            await client.post(f"{SUPABASE_URL}/rest/v1/ai_predictions", headers=headers, params={"on_conflict": "match_key"}, json=body)
     except httpx.HTTPError:
         pass
 
@@ -105,8 +126,7 @@ async def gemini_generate(prompt: str) -> str:
     if not GEMINI_API_KEY:
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY environment variable bulunamadı.")
     try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+        response = genai.Client(api_key=GEMINI_API_KEY).models.generate_content(model=GEMINI_MODEL, contents=prompt)
         text = (response.text or "").strip()
         if not text:
             raise HTTPException(status_code=502, detail="Gemini boş yanıt döndürdü.")
@@ -116,27 +136,25 @@ async def gemini_generate(prompt: str) -> str:
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Gemini üretim hatası: {exc}") from exc
 
-ANALYSIS_PROMPT = """
-Sen Bay Tahmin adlı profesyonel futbol analiz ajanısın.
-Sadece aşağıda verilen seçili maçın gerçek verilerini kullan. Veride olmayan istatistikleri uydurma.
-Eksik veri varsa açıkça belirt. Kupon oluşturma veya bahis satışı yapma; yalnızca analiz ve futbol projeksiyonları üret.
-Yanıtı SADECE geçerli JSON olarak ver.
-Alanlar: mac_ozeti, takimlarin_durumu, olasi_senaryo, ms_tahmini, kg_tahmini, alt_ust_tahmini,
-ilk_yari_tahmini, ht_ft_tahmini, surpriz_ihtimali, en_guvenilir_tahminler, risk_seviyesi, tahmin_gerekcesi.
-"""
-
 @app.get("/ai/analyze/{match_id}")
 async def analyze_match_with_ai(match_id: int):
     cached = await cache_get(match_id)
     if cached is not None:
         return {"analysis": cached, "source": "cache"}
+
     match_data = await get_match_detail(match_id)
-    raw = await gemini_generate(ANALYSIS_PROMPT + "\nSEÇİLİ MAÇ VERİSİ:\n" + compact_data(match_data))
-    cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`").strip()
-        if cleaned.lower().startswith("json"):
-            cleaned = cleaned[4:].strip()
+    prompt = f"""{EXPERT_CORE}
+Bu seçili maç için kapsamlı uzman analizi üret.
+Yanıtı SADECE geçerli JSON olarak ver.
+Alanlar: mac_ozeti, takimlarin_durumu, olasi_senaryo, ms_tahmini, kg_tahmini,
+alt_ust_tahmini, ilk_yari_tahmini, ht_ft_tahmini, surpriz_ihtimali,
+en_guvenilir_tahminler, risk_seviyesi, tahmin_gerekcesi.
+Her tahminde mümkünse güven ve risk belirt.
+
+SEÇİLİ MAÇ VERİSİ:
+{compact_data(match_data)}"""
+    raw = await gemini_generate(prompt)
+    cleaned = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     try:
         analysis = json.loads(cleaned)
     except json.JSONDecodeError:
@@ -151,57 +169,57 @@ async def chat_about_match(match_id: int, request: Request):
     except Exception:
         payload = {}
     message = str(payload.get("message") or payload.get("question") or "").strip()
-    history = payload.get("history") or []
     if not message:
         raise HTTPException(status_code=400, detail="Mesaj boş olamaz.")
+    history = payload.get("history") or []
     match_data = await get_match_detail(match_id)
-    prompt = f"""
-Sen Bay Tahmin adlı futbol analiz sohbet ajanısın. Yalnızca seçili maçın aşağıdaki gerçek verilerine dayanarak Türkçe yanıt ver.
-Veri içinde olmayan bilgiyi uydurma. Kullanıcı tahmin sorarsa gerekçeli futbol projeksiyonu yap ve belirsizliği belirt.
-Kupon oluşturma veya bahis satışı yapma.
+    prompt = f"""{EXPERT_CORE}
+Şu anda MAÇ ÖZEL MODUNDASIN. Kullanıcının sorusunu seçili maç bağlamında uzman gibi yanıtla.
+
 SEÇİLİ MAÇ VERİSİ:
 {compact_data(match_data)}
 ÖNCEKİ SOHBET:
 {compact_data(history, 12000)}
 KULLANICI SORUSU:
-{message}
-"""
+{message}"""
     return {"reply": await gemini_generate(prompt)}
 
-@app.post("/chat")
-async def general_chat(request: Request):
-    """Genel Bay Tahmin sohbeti: kullanıcı maç seçmeden haftalık gerçek maç havuzuyla konuşur."""
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
-    message = str(payload.get("message") or payload.get("question") or "").strip()
-    history = payload.get("history") or []
-    if not message:
-        raise HTTPException(status_code=400, detail="Mesaj boş olamaz.")
-
-    # Use a seven-day window. This is data retrieval only; no AI is called here until the user asks.
+async def get_weekly_matches(days: int = 7):
     today = datetime.now().date()
     weekly = []
-    for offset in range(7):
+    for offset in range(days):
         date = (today + timedelta(days=offset)).isoformat()
         try:
             weekly.append({"date": date, "matches": await get_matches(date)})
         except HTTPException:
             weekly.append({"date": date, "matches": []})
+    return weekly
 
-    prompt = f"""
-Sen Bay Tahmin, Futbol Ajanı platformunun genel futbol analiz asistanısın.
-Kullanıcı herhangi bir maç detayına girmeden soru soruyor. Aşağıdaki 7 günlük gerçek NOSYAPI maç programını kullan.
-Takım, tarih, maç seçimi, güvenilir tahmin, sürpriz aday, gol eğilimi gibi soruları yanıtlayabilirsin.
-Kullanıcı birden fazla maç isterse gerçek programdaki maçlardan seç ve nedenlerini açıkla.
-Kupon oluşturma veya bahis satışı yapma; yalnızca analiz/tahmin listesi ve gerekçe sun.
-Veride olmayan bilgiyi uydurma. Tarih ve saatleri verilen veriye göre belirt.
+@app.post("/chat")
+async def general_chat(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    message = str(payload.get("message") or payload.get("question") or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Mesaj boş olamaz.")
+    history = payload.get("history") or []
+    weekly = await get_weekly_matches()
+
+    prompt = f"""{EXPERT_CORE}
+Şu anda GENEL BAY TAHMİN MODUNDASIN.
+Kullanıcı maç detayına girmeden haftalık gerçek maç programı üzerinden sana soru soruyor.
+Sorunun niyetini anla ve sadece gerekli maçları karşılaştır.
+"5 maç", "4 sürpriz aday", "İlk Yarı 1.5 Üst adayları", "en güvenilir maçlar" gibi isteklerde
+önce gerçek programdaki adayları değerlendir, sonra uzman projeksiyonlarını sırala.
+Programdaki verinin doğrudan bir market alanı içermemesi nedeniyle analizi reddetme.
+Eldeki gerçek sinyallerden çıkarım yap, ancak uydurma sayı/oran verme.
+
 ÖNCEKİ SOHBET:
 {compact_data(history, 12000)}
-7 GÜNLÜK MAÇ PROGRAMI:
-{compact_data(weekly, 45000)}
+7 GÜNLÜK GERÇEK MAÇ PROGRAMI:
+{compact_data(weekly, 50000)}
 KULLANICI SORUSU:
-{message}
-"""
+{message}"""
     return {"reply": await gemini_generate(prompt)}
