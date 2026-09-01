@@ -13,7 +13,8 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False,
 NOSYAPI_BASE_URL = os.getenv("NOSYAPI_BASE_URL", "https://www.nosyapi.com/apiv2/service").rstrip("/")
 NOSYAPI_KEY = os.getenv("NOSYAPI_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+# Gemini 2.5 Flash is no longer available for this API key. Use the currently supported Flash model.
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
@@ -92,11 +93,7 @@ async def cache_get(match_id: int):
     headers = {"apikey": SUPABASE_SERVICE_ROLE_KEY, "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}"}
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(
-                f"{SUPABASE_URL}/rest/v1/ai_predictions",
-                headers=headers,
-                params={"match_key": f"eq.{match_id}", "select": "analysis,created_at", "limit": "1"},
-            )
+            response = await client.get(f"{SUPABASE_URL}/rest/v1/ai_predictions", headers=headers, params={"match_key": f"eq.{match_id}", "select": "analysis,created_at", "limit": "1"})
         if response.status_code == 200:
             rows = response.json()
             if rows and rows[0].get("analysis"):
@@ -141,7 +138,6 @@ async def analyze_match_with_ai(match_id: int):
     cached = await cache_get(match_id)
     if cached is not None:
         return {"analysis": cached, "source": "cache"}
-
     match_data = await get_match_detail(match_id)
     prompt = f"""{EXPERT_CORE}
 Bu seçili maç için kapsamlı uzman analizi üret.
@@ -150,7 +146,6 @@ Alanlar: mac_ozeti, takimlarin_durumu, olasi_senaryo, ms_tahmini, kg_tahmini,
 alt_ust_tahmini, ilk_yari_tahmini, ht_ft_tahmini, surpriz_ihtimali,
 en_guvenilir_tahminler, risk_seviyesi, tahmin_gerekcesi.
 Her tahminde mümkünse güven ve risk belirt.
-
 SEÇİLİ MAÇ VERİSİ:
 {compact_data(match_data)}"""
     raw = await gemini_generate(prompt)
@@ -175,7 +170,6 @@ async def chat_about_match(match_id: int, request: Request):
     match_data = await get_match_detail(match_id)
     prompt = f"""{EXPERT_CORE}
 Şu anda MAÇ ÖZEL MODUNDASIN. Kullanıcının sorusunu seçili maç bağlamında uzman gibi yanıtla.
-
 SEÇİLİ MAÇ VERİSİ:
 {compact_data(match_data)}
 ÖNCEKİ SOHBET:
@@ -206,7 +200,6 @@ async def general_chat(request: Request):
         raise HTTPException(status_code=400, detail="Mesaj boş olamaz.")
     history = payload.get("history") or []
     weekly = await get_weekly_matches()
-
     prompt = f"""{EXPERT_CORE}
 Şu anda GENEL BAY TAHMİN MODUNDASIN.
 Kullanıcı maç detayına girmeden haftalık gerçek maç programı üzerinden sana soru soruyor.
@@ -215,7 +208,6 @@ Sorunun niyetini anla ve sadece gerekli maçları karşılaştır.
 önce gerçek programdaki adayları değerlendir, sonra uzman projeksiyonlarını sırala.
 Programdaki verinin doğrudan bir market alanı içermemesi nedeniyle analizi reddetme.
 Eldeki gerçek sinyallerden çıkarım yap, ancak uydurma sayı/oran verme.
-
 ÖNCEKİ SOHBET:
 {compact_data(history, 12000)}
 7 GÜNLÜK GERÇEK MAÇ PROGRAMI:
