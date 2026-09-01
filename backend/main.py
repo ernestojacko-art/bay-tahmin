@@ -66,12 +66,7 @@ async def nosy_get(path: str, params: dict):
 
 @app.get("/matches")
 async def get_matches(date: str | None = None):
-    payload = await nosy_get("bettable-matches", {"type": 1, **({"date": date} if date else {})})
-    if isinstance(payload, dict) and isinstance(payload.get("data"), list):
-        return payload["data"]
-    if isinstance(payload, list):
-        return payload
-    return []
+    return await nosy_get("bettable-matches", {"type": 1, **({"date": date} if date else {})})
 
 @app.get("/mac/{match_id}")
 async def get_match_detail(match_id: int):
@@ -167,8 +162,9 @@ async def get_chat_match_context(match_id: int):
     except HTTPException as detail_error:
         try:
             listing = await get_matches()
-            if isinstance(listing, list):
-                found = next((row for row in listing if str(row.get("MatchID") or row.get("id")) == str(match_id)), None)
+            rows = listing.get("data") if isinstance(listing, dict) else listing
+            if isinstance(rows, list):
+                found = next((row for row in rows if str(row.get("MatchID") or row.get("id")) == str(match_id)), None)
                 if found is not None:
                     return found
         except HTTPException:
