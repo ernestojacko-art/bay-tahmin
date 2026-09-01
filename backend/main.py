@@ -13,7 +13,6 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False,
 NOSYAPI_BASE_URL = os.getenv("NOSYAPI_BASE_URL", "https://www.nosyapi.com/apiv2/service").rstrip("/")
 NOSYAPI_KEY = os.getenv("NOSYAPI_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-# Gemini 2.5 Flash is no longer available for this API key. Use the currently supported Flash model.
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -157,6 +156,24 @@ SEÇİLİ MAÇ VERİSİ:
     await cache_put(match_id, analysis)
     return {"analysis": analysis, "source": "gemini"}
 
+async def get_chat_match_context(match_id: int):
+    """Maç detay endpointi geçici olarak hata verirse sohbeti tamamen düşürme.
+    Önce detay verisini, sonra güncel programdaki aynı MatchID kaydını kullanır.
+    """
+    try:
+        return await get_match_detail(match_id)
+    except HTTPException as detail_error:
+        try:
+            listing = await get_matches()
+            rows = listing.get("data") if isinstance(listing, dict) else listing
+            if isinstance(rows, list):
+                found = next((row for row in rows if str(row.get("MatchID") or row.get("id")) == str(match_id)), None)
+                if found is not None:
+                    return found
+        except HTTPException:
+            pass
+        raise detail_error
+
 @app.post("/matches/{match_id}/chat")
 async def chat_about_match(match_id: int, request: Request):
     try:
@@ -167,7 +184,7 @@ async def chat_about_match(match_id: int, request: Request):
     if not message:
         raise HTTPException(status_code=400, detail="Mesaj boş olamaz.")
     history = payload.get("history") or []
-    match_data = await get_match_detail(match_id)
+    match_data = await get_chat_match_context(match_id)
     prompt = f"""{EXPERT_CORE}
 Şu anda MAÇ ÖZEL MODUNDASIN. Kullanıcının sorusunu seçili maç bağlamında uzman gibi yanıtla.
 SEÇİLİ MAÇ VERİSİ:
