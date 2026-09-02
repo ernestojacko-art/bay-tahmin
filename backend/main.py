@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 from datetime import datetime, timedelta
 
 import httpx
@@ -19,27 +20,24 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
 EXPERT_CORE = """
-Sen Bay Tahmin'sin: basit bir chatbot değil, gerçek maç programı ve gerçek iddaa verisi üzerinden çalışan profesyonel futbol analiz uzmanısın.
+Sen Bay Tahmin'sin. Basit bir sohbet botu değil, gerçek İddaa programı ve gerçek market verileriyle çalışan futbol analiz ajanısın.
 
-ANALİZ KURALLARI:
-- Yalnızca sana verilen gerçek API verilerini temel al. Veri içinde olmayan takım formu, sakatlık, xG, hava, oyuncu veya istatistiği varmış gibi uydurma.
-- Her tahmini tek bir sinyale göre verme. Mevcut verileri birlikte değerlendir: maç oranları, gol marketleri, ilk yarı marketleri, KG marketleri, BetCount, favori dengesi, takım/lig bilgileri ve verilen diğer gerçek marketler.
-- İstenen market doğrudan veride varsa öncelikle o marketin gerçek oranını ve aynı maçtaki ilişkili marketleri kullan.
-- İstenen market doğrudan veride yoksa, mevcut gerçek sinyallerden uzman projeksiyonu çıkar. Bu durumda bunun bir model projeksiyonu olduğunu belirt; uydurma oran yazma.
-- İlk Yarı 1.5 Üst gibi bir tahminde özellikle ilk yarı Alt/Üst marketlerini, ilk yarı sonuçlarını ve ilgili gol marketlerini kontrol et. Sadece MS oranından ilk yarı sonucu çıkarma.
-- KG tahmininde KG marketi varsa onu ve toplam gol/maç sonucu dengesini birlikte değerlendir.
-- MS tahmininde 1X2 oranlarını, beraberlik oranını ve ilgili gol marketlerini birlikte değerlendir.
-- Alt/Üst tahmininde mevcut toplam gol marketlerini ve bunların birbirleriyle tutarlılığını karşılaştır.
-- HT/FT tahmininde ilk yarı ve maç sonucu sinyallerinin birbiriyle tutarlı olmasını ara.
-- Oranı düşük diye otomatik olarak "güvenli" deme. Piyasa favorisi ile analitik güveni birbirinden ayır.
-- Bir tahmin için veri çelişkiliyse zorla güçlü tahmin üretme; güveni düşür ve riski yükselt.
-- Aynı maçı bir sonuç içinde iki kez listeleme. Kullanıcı kaç farklı maç istediyse, yeterli gerçek aday varsa tam o sayıda FARKLI maç ver.
-- Her adayda: Maç | Tahmin | Güven (0-10) | Risk | Kısa veri gerekçesi.
-- Güven skoru başarı garantisi değildir. 8.5+ güçlü, 7.0-8.4 değerlendirilebilir, 6.0-6.9 riskli, 6 altı zayıf kabul edilir.
-- Kullanıcı kombinasyon isterse resmi kupon oluşturma; önerilen tahmin listesi olarak sun.
-- Kullanıcıya veritabanı, endpoint, backend, panel veya sistem limiti gibi iç teknik mazeretler anlatma. Gerçek program verisi varsa onun üzerinden analiz yap.
-- Veri gerçekten yetersizse bunu açıkça söyle ve sayı/istatistik/maç uydurma.
-- Türkçe, net, profesyonel ve kısa ama gerekçeli cevap ver.
+TEMEL KURAL:
+- Yalnızca verilen gerçek API verilerini kullan. Veride olmayan form, xG, sakatlık, oyuncu, hava veya istatistiği uydurma.
+- Bir market kullanıcı tarafından açıkça isteniyorsa, o marketin GERÇEKTEN AÇIK olup olmadığını kontrol et.
+- İstenen market açık değilse, o maç için sanki market açıkmış gibi tahmin sunma. Kullanıcıya alternatif market uydurma.
+- Özellikle İY/MS isteğinde yalnızca gerçek İY/MS (İlk Yarı/Maç Sonucu) marketi bulunan maçları kullan.
+- İY/MS marketi bulunmayan maçı İY/MS listesine kesinlikle sokma.
+- İY/MS isteğinde 1/1 ve 2/2 gibi düz favori senaryolarını "sürpriz" diye adlandırma. Sürpriz adayları esas olarak X/1, X/2, 1/X, 2/X, 1/2 ve 2/1 gibi ilk yarı ile maç sonunun farklı olduğu senaryolardan seç.
+- Kullanıcı "sürpriz olasılığı yüksek" diyorsa önce gerçek İY/MS marketindeki sürpriz senaryoların piyasa olasılığını ve oranını karşılaştır; sadece en güçlü favorileri listeleme.
+- Piyasa oranından olasılık çıkarırken oranı 1/oran olarak değerlendir ve mümkünse aynı marketteki tüm açık sonuçlara göre normalize et. Güven puanı başarı garantisi değildir.
+- Sürpriz adayını seçerken yalnızca yüksek oranlı olmasına bakma. Daha düşük oranlı ve piyasa tarafından daha olası görülen sürpriz senaryoları öne al; aşırı yüksek oranlı seçenekleri "kuvvetle muhtemel" diye sunma.
+- Aynı maç veya MatchID iki kez listelenemez.
+- Kullanıcı sayı verdiyse ve yeterli gerçek aday varsa tam o sayıda farklı aday ver. Yeterli gerçek aday yoksa uydurma; mevcut sayıyı dürüstçe bildir.
+- Her adayda maç, gerçek marketteki tahmin, gerçek oran, piyasa olasılığı, güven, risk ve kısa veri gerekçesi ver.
+- İlgili market açık değilse model projeksiyonunu gerçek İddaa seçeneği gibi gösterme.
+- Teknik iç ayrıntıları kullanıcıya mazeret olarak anlatma.
+- Türkçe, net ve profesyonel ol.
 """
 
 @app.get("/")
@@ -48,13 +46,7 @@ def root():
 
 @app.get("/health")
 def health():
-    return {
-        "status": "healthy",
-        "nosyapi_configured": bool(NOSYAPI_KEY),
-        "gemini_configured": bool(GEMINI_API_KEY),
-        "gemini_model": GEMINI_MODEL,
-        "analysis_cache_configured": bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY),
-    }
+    return {"status": "healthy", "nosyapi_configured": bool(NOSYAPI_KEY), "gemini_configured": bool(GEMINI_API_KEY), "gemini_model": GEMINI_MODEL, "analysis_cache_configured": bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY)}
 
 async def nosy_get(path: str, params: dict):
     if not NOSYAPI_KEY:
@@ -87,14 +79,13 @@ async def get_match_detail_alias(match_id: int):
 def get_leagues():
     return []
 
-def compact_data(value, max_chars=40000):
+def compact_data(value, max_chars=50000):
     try:
         return json.dumps(value, ensure_ascii=False, default=str)[:max_chars]
     except Exception:
         return str(value)[:max_chars]
 
 def extract_rows(payload):
-    """NOSYAPI cevabındaki maç listesini şekilden bağımsız çıkar."""
     if isinstance(payload, list):
         return [x for x in payload if isinstance(x, dict)]
     if isinstance(payload, dict):
@@ -117,9 +108,9 @@ def dedupe_rows(rows):
     unique = []
     for row in rows:
         key = match_identity(row)
+        if key and key in seen:
+            continue
         if key:
-            if key in seen:
-                continue
             seen.add(key)
         unique.append(row)
     return unique
@@ -130,15 +121,86 @@ def match_name(row):
 def match_date(row):
     return str(row.get("Date") or row.get("date") or "")
 
+def normalize_text(value):
+    return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+def walk_dicts(value):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from walk_dicts(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from walk_dicts(child)
+
+def extract_markets(detail):
+    markets = []
+    for item in walk_dicts(detail):
+        name = item.get("gameName") or item.get("GameName") or item.get("name")
+        odds = item.get("odds") or item.get("Odds") or item.get("gameOdds")
+        if name and isinstance(odds, list):
+            clean_odds = []
+            for odd in odds:
+                if not isinstance(odd, dict):
+                    continue
+                value = odd.get("value")
+                price = odd.get("odd")
+                try:
+                    price = float(price)
+                except (TypeError, ValueError):
+                    continue
+                if value not in (None, "") and price > 0:
+                    clean_odds.append({"value": str(value).strip(), "odd": price})
+            if clean_odds:
+                markets.append({"gameName": str(name), "type": str(item.get("type") or ""), "odds": clean_odds})
+    return markets
+
+def find_iyms_market(detail):
+    candidates = []
+    for market in extract_markets(detail):
+        name = normalize_text(market["gameName"])
+        compact = name.replace(" ", "")
+        is_iyms = (
+            ("ilk yarı" in name and "maç sonucu" in name)
+            or "ilk yarı/maç sonucu" in name
+            or "ilk yarı-maç sonucu" in name
+            or "iy/ms" in compact
+            or "iyms" in compact
+        )
+        if is_iyms:
+            candidates.append(market)
+    if not candidates:
+        return None
+    # En dolu gerçek marketi tercih et.
+    return max(candidates, key=lambda x: len(x["odds"]))
+
+def market_probability(odds):
+    raw = {x["value"]: 1.0 / x["odd"] for x in odds if x.get("odd", 0) > 0}
+    total = sum(raw.values())
+    if not total:
+        return {}
+    return {key: value / total for key, value in raw.items()}
+
+def is_straight_result(value):
+    compact = normalize_text(value).replace(" ", "")
+    return compact in {"1/1", "2/2", "1-1", "2-2", "1:1", "2:2"}
+
+def is_surprise_result(value):
+    compact = normalize_text(value).replace(" ", "")
+    return compact in {"x/1", "x/2", "1/x", "2/x", "1/2", "2/1", "x-1", "x-2", "1-x", "2-x", "1:2", "2:1"}
+
+def parse_iyms_market(market):
+    probs = market_probability(market["odds"])
+    options = []
+    for item in market["odds"]:
+        value = item["value"]
+        options.append({"value": value, "odd": item["odd"], "probability": round(probs.get(value, 0) * 100, 2), "surprise": is_surprise_result(value) and not is_straight_result(value)})
+    surprise = [x for x in options if x["surprise"]]
+    surprise.sort(key=lambda x: x["probability"], reverse=True)
+    return {"market_name": market["gameName"], "options": options, "surprise_options": surprise}
+
 def slim_match(row):
-    """Gemini'ye maçın karar vermede işe yarayan gerçek alanlarını ver."""
-    preferred = (
-        "MatchID", "Date", "Time", "DateTime", "Country", "League", "Teams", "Team1", "Team2",
-        "BetCount", "HomeWin", "Draw", "AwayWin", "Under15", "Over15", "Under25", "Over25",
-        "Under35", "Over35", "KGVar", "KGYok", "BothTeamsToScore", "FirstHalfHomeWin",
-        "FirstHalfDraw", "FirstHalfAwayWin", "FirstHalfUnder05", "FirstHalfOver05",
-        "FirstHalfUnder15", "FirstHalfOver15", "HTUnder15", "HTOver15"
-    )
+    preferred = ("MatchID", "Date", "Time", "DateTime", "Country", "League", "Teams", "Team1", "Team2", "BetCount", "HomeWin", "Draw", "AwayWin", "Under15", "Over15", "Under25", "Over25", "Under35", "Over35")
     return {key: row[key] for key in preferred if key in row and row[key] not in (None, "")}
 
 async def cache_get(match_id: int):
@@ -160,12 +222,7 @@ async def cache_get(match_id: int):
 async def cache_put(match_id: int, analysis: dict):
     if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
         return
-    headers = {
-        "apikey": SUPABASE_SERVICE_ROLE_KEY,
-        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
-        "Content-Type": "application/json",
-        "Prefer": "resolution=merge-duplicates,return=minimal",
-    }
+    headers = {"apikey": SUPABASE_SERVICE_ROLE_KEY, "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}", "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates,return=minimal"}
     body = {"match_key": str(match_id), "match_id": match_id, "analysis": json.dumps(analysis, ensure_ascii=False)}
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -176,15 +233,13 @@ async def cache_put(match_id: int, analysis: dict):
 async def gemini_generate(prompt: str) -> str:
     if not GEMINI_API_KEY:
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY environment variable bulunamadı.")
-
-    def generate_sync() -> str:
+    def generate_sync():
         client = genai.Client(api_key=GEMINI_API_KEY)
         try:
             response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
             return (response.text or "").strip()
         finally:
             client.close()
-
     try:
         text = await asyncio.to_thread(generate_sync)
         if not text:
@@ -204,10 +259,8 @@ async def analyze_match_with_ai(match_id: int):
     prompt = f"""{EXPERT_CORE}
 Bu seçili maç için kapsamlı uzman analizi üret.
 Yanıtı SADECE geçerli JSON olarak ver.
-Alanlar: mac_ozeti, takimlarin_durumu, olasi_senaryo, ms_tahmini, kg_tahmini,
-alt_ust_tahmini, ilk_yari_tahmini, ht_ft_tahmini, surpriz_ihtimali,
-en_guvenilir_tahminler, risk_seviyesi, tahmin_gerekcesi.
-Her tahmin nesnesinde tahmin, guven ve risk alanları kullan. Tahmin alanını ASLA nesne olarak tekrar iç içe koyma.
+Alanlar: mac_ozeti, takimlarin_durumu, olasi_senaryo, ms_tahmini, kg_tahmini, alt_ust_tahmini, ilk_yari_tahmini, ht_ft_tahmini, surpriz_ihtimali, en_guvenilir_tahminler, risk_seviyesi, tahmin_gerekcesi.
+Her tahmin nesnesinde tahmin, guven ve risk alanları kullan. Tahmin alanını iç içe nesne yapma.
 SEÇİLİ MAÇ GERÇEK API VERİSİ:
 {compact_data(match_data)}"""
     raw = await gemini_generate(prompt)
@@ -245,7 +298,7 @@ async def chat_about_match(match_id: int, request: Request):
     history = payload.get("history") or []
     match_data = await get_chat_match_context(match_id)
     prompt = f"""{EXPERT_CORE}
-Şu anda MAÇ ÖZEL MODUNDASIN. Kullanıcının sorusunu seçili maç bağlamında uzman gibi yanıtla.
+Şu anda MAÇ ÖZEL MODUNDASIN.
 SEÇİLİ MAÇ GERÇEK API VERİSİ:
 {compact_data(match_data)}
 ÖNCEKİ SOHBET:
@@ -254,30 +307,14 @@ KULLANICI SORUSU:
 {message}"""
     return {"reply": await gemini_generate(prompt)}
 
-async def get_weekly_matches(days: int = 7):
-    today = datetime.now().date()
-    weekly = []
-    for offset in range(days):
-        date = (today + timedelta(days=offset)).isoformat()
-        try:
-            weekly.append({"date": date, "matches": await get_matches(date)})
-        except HTTPException:
-            weekly.append({"date": date, "matches": []})
-    return weekly
-
 async def get_today_expert_pool():
-    """Genel sohbet için yalnızca bugünün gerçek programını hazırlar ve tekrarları temizler."""
     today = datetime.now().date().isoformat()
     dated = await get_matches(today)
     rows = dedupe_rows(extract_rows(dated))
-
-    # Bazı servis cevaplarında tarih filtresi beklenmedik biçimde dar dönebilir.
-    # İkinci çağrı yalnızca aday sayısı yetersizse yapılır; yine MatchID ile tekilleştirilir.
     if len(rows) < 5:
         current = await get_matches()
         current_rows = dedupe_rows(extract_rows(current))
-        merged = rows[:]
-        known = {match_identity(x) for x in merged if match_identity(x)}
+        known = {match_identity(x) for x in rows if match_identity(x)}
         for row in current_rows:
             key = match_identity(row)
             row_date = match_date(row)
@@ -285,33 +322,29 @@ async def get_today_expert_pool():
                 continue
             if row_date and row_date != today:
                 continue
-            merged.append(row)
+            rows.append(row)
             if key:
                 known.add(key)
-        rows = dedupe_rows(merged)
+    return dedupe_rows(rows)
 
-    return rows
-
-async def build_expert_candidates(rows, detail_limit=12):
-    """Liste oranlarını + sınırlı sayıda tam market detayını tek bir analiz paketi yap."""
+async def build_market_aware_pool(rows):
+    """Her maçın tam market detayını kontrol eder; özellikle İY/MS için yalnızca marketi gerçekten açık maçları geçirir."""
     rows = dedupe_rows(rows)
-    # Önce gerçek liste verisini kullan. Detay çağrılarını maç sayısını şişirmemek için sınırla.
-    candidates = [slim_match(row) for row in rows]
-    detail_rows = rows[:detail_limit]
 
-    async def fetch_detail(row):
+    async def inspect(row):
         key = match_identity(row)
         if not key:
             return None
         try:
             detail = await get_match_detail(int(key))
-            return {"MatchID": key, "Teams": match_name(row), "detail": detail}
         except HTTPException:
-            return {"MatchID": key, "Teams": match_name(row), "detail": None}
+            detail = None
+        iyms = find_iyms_market(detail) if detail is not None else None
+        parsed = parse_iyms_market(iyms) if iyms else None
+        return {"match": slim_match(row), "iyms_market_open": bool(parsed), "iyms": parsed}
 
-    details = await asyncio.gather(*(fetch_detail(row) for row in detail_rows))
-    details = [item for item in details if item]
-    return {"today": datetime.now().date().isoformat(), "match_count": len(rows), "matches": candidates, "detailed_market_samples": details}
+    inspected = await asyncio.gather(*(inspect(row) for row in rows))
+    return [x for x in inspected if x]
 
 @app.post("/chat")
 async def general_chat(request: Request):
@@ -324,31 +357,55 @@ async def general_chat(request: Request):
         raise HTTPException(status_code=400, detail="Mesaj boş olamaz.")
     history = payload.get("history") or []
     today_rows = await get_today_expert_pool()
-    expert_pool = await build_expert_candidates(today_rows)
+
+    wants_iyms = bool(re.search(r"iy\s*/?\s*ms|i[yı]\s*[/\\-]\s*m[sş]|ilk\s*yari\s*/?\s*mac\s*sonucu|ilk\s*yari.*mac\s*sonucu", normalize_text(message)))
+    if wants_iyms:
+        market_pool = await build_market_aware_pool(today_rows)
+        eligible = [x for x in market_pool if x["iyms_market_open"] and x.get("iyms", {}).get("surprise_options")]
+        # En güçlü gerçek sürpriz seçenekleri önce çıkar; Gemini bunların arasından uzman filtresi yapacak.
+        eligible.sort(key=lambda x: max((o["probability"] for o in x["iyms"]["surprise_options"]), default=0), reverse=True)
+        pool = eligible
+        instruction = """
+BU İSTEK İY/MS VE SÜRPRİZ ODAKLI.
+SADECE aşağıdaki pool içinde iyms_market_open=true olan maçları kullan.
+Her maçın iyms.options alanı İddaa'nın GERÇEK açık İY/MS marketinden alınmıştır.
+Kullanıcı sürpriz istiyor: 1/1 ve 2/2 DÜZ senaryolarını sürpriz kabul etme.
+Önceliği X/1, X/2, 1/X, 2/X, 1/2, 2/1 gibi ilk yarı ile maç sonunun farklı olduğu gerçek market seçeneklerine ver.
+Her maç için önce en olası sürpriz senaryoyu seç. Piyasa olasılığı çok düşük olan yüksek oranlı senaryoyu sırf sürpriz diye öne çıkarma.
+"""
+    else:
+        pool = await build_market_aware_pool(today_rows)
+        instruction = """
+Kullanıcının istediği marketi önce gerçek detay marketlerinde bul.
+Market gerçekten açık değilse o maç için ilgili market tahmini üretme. Doğrudan açık olan marketleri tercih et.
+"""
+
+    requested = None
+    match_count = re.search(r"\b(\d{1,2})\s*(?:maç|adet|tane)\b", normalize_text(message))
+    if match_count:
+        requested = int(match_count.group(1))
+
     prompt = f"""{EXPERT_CORE}
-ŞU ANDA GENEL BAY TAHMİN MODUNDASIN.
+GENEL BAY TAHMİN ANALİZİ.
 
-Kullanıcı maç detayına girmeden bugünün gerçek programından tahmin istiyor. Önce aşağıdaki aday havuzunu analiz et.
-Bu havuz NOSYAPI'nin bugünkü gerçek futbol programından alınmıştır ve MatchID ile tekilleştirilmiştir.
-Aynı MatchID'yi ikinci kez önerme.
+{instruction}
 
-ÇOK ÖNEMLİ SEÇİM KURALI:
-- Kullanıcı sayı belirttiyse ve havuzda yeterli farklı maç varsa TAM OLARAK o sayıda farklı maç döndür.
-- Örneğin "bugünün ilk yarı 1,5 üst 5 maçını ver" denirse 5 farklı maçı karşılaştır, en güçlü 5 adayı sırala.
-- Önce doğrudan ilgili marketi ara. Tam market detayı verilmişse onu önceliklendir.
-- İlgili marketin tam detayı yoksa mevcut gerçek oranlar ve ilişkili marketlerden projeksiyon yap.
-- Adayları yalnızca oranı düşük diye seçme; marketler arası tutarlılık, gol sinyalleri, favori dengesi ve mevcut gerçek verilerin birlikte verdiği tabloyu değerlendir.
-- Bir maç için güçlü veri yoksa onu üst sıralara zorla koyma.
-- Uydurma oran, form, xG veya istatistik ekleme.
-- Kullanıcıya teknik sistem açıklaması yapma.
-- Sonuçları numaralı ve karşılaştırılabilir ver: Maç | Tahmin | Güven | Risk | Kısa veri gerekçesi.
+GERÇEK BUGÜNÜN ADAY HAVUZU:
+{compact_data(pool, 60000)}
+
+KULLANICI İSTEĞİ:
+{message}
 
 ÖNCEKİ SOHBET:
-{compact_data(history, 12000)}
+{compact_data(history, 10000)}
 
-BUGÜNÜN GERÇEK MAÇ HAVUZU:
-{compact_data(expert_pool, 60000)}
-
-KULLANICI SORUSU:
-{message}"""
+ÇIKTI KURALLARI:
+- Kullanıcı sayı verdiyse ve yeterli gerçek aday varsa tam o sayıda FARKLI maç ver.
+- İY/MS isteğinde markette gerçekten bulunmayan hiçbir maçı listeleme.
+- Sürpriz istenen bir soruda düz 1/1 veya 2/2'yi sürpriz diye sunma.
+- Her sonuçta gerçek marketteki tahmin değerini ve gerçek oranını yaz.
+- Piyasa olasılığını oranlardan hesapla; uydurma istatistik ekleme.
+- Güven puanı, piyasa olasılığından bağımsız bir uzman değerlendirmesi olabilir ama veri dışı gerekçe kullanma.
+- Yeterli aday yoksa eksik sayıyı doldurmak için başka marketi veya marketi kapalı maçı kullanma.
+"""
     return {"reply": await gemini_generate(prompt)}
