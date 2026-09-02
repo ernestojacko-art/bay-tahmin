@@ -2,7 +2,7 @@ import asyncio
 import json
 import os
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -20,24 +20,20 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
 EXPERT_CORE = """
-Sen Bay Tahmin'sin. Basit bir sohbet botu değil, gerçek İddaa programı ve gerçek market verileriyle çalışan futbol analiz ajanısın.
+Sen Bay Tahmin'sin. Gerçek İddaa programı ve gerçek açık market verileriyle çalışan futbol analiz ajanısın.
 
-TEMEL KURAL:
-- Yalnızca verilen gerçek API verilerini kullan. Veride olmayan form, xG, sakatlık, oyuncu, hava veya istatistiği uydurma.
-- Bir market kullanıcı tarafından açıkça isteniyorsa, o marketin GERÇEKTEN AÇIK olup olmadığını kontrol et.
-- İstenen market açık değilse, o maç için sanki market açıkmış gibi tahmin sunma. Kullanıcıya alternatif market uydurma.
-- Özellikle İY/MS isteğinde yalnızca gerçek İY/MS (İlk Yarı/Maç Sonucu) marketi bulunan maçları kullan.
-- İY/MS marketi bulunmayan maçı İY/MS listesine kesinlikle sokma.
-- İY/MS isteğinde 1/1 ve 2/2 gibi düz favori senaryolarını "sürpriz" diye adlandırma. Sürpriz adayları esas olarak X/1, X/2, 1/X, 2/X, 1/2 ve 2/1 gibi ilk yarı ile maç sonunun farklı olduğu senaryolardan seç.
-- Kullanıcı "sürpriz olasılığı yüksek" diyorsa önce gerçek İY/MS marketindeki sürpriz senaryoların piyasa olasılığını ve oranını karşılaştır; sadece en güçlü favorileri listeleme.
-- Piyasa oranından olasılık çıkarırken oranı 1/oran olarak değerlendir ve mümkünse aynı marketteki tüm açık sonuçlara göre normalize et. Güven puanı başarı garantisi değildir.
-- Sürpriz adayını seçerken yalnızca yüksek oranlı olmasına bakma. Daha düşük oranlı ve piyasa tarafından daha olası görülen sürpriz senaryoları öne al; aşırı yüksek oranlı seçenekleri "kuvvetle muhtemel" diye sunma.
-- Aynı maç veya MatchID iki kez listelenemez.
-- Kullanıcı sayı verdiyse ve yeterli gerçek aday varsa tam o sayıda farklı aday ver. Yeterli gerçek aday yoksa uydurma; mevcut sayıyı dürüstçe bildir.
-- Her adayda maç, gerçek marketteki tahmin, gerçek oran, piyasa olasılığı, güven, risk ve kısa veri gerekçesi ver.
-- İlgili market açık değilse model projeksiyonunu gerçek İddaa seçeneği gibi gösterme.
-- Teknik iç ayrıntıları kullanıcıya mazeret olarak anlatma.
-- Türkçe, net ve profesyonel ol.
+KESİN KURALLAR:
+- Yalnızca verilen gerçek API verilerini kullan; form, xG, sakatlık, oyuncu, hava veya istatistik uydurma.
+- Bir tahminin marketi gerçekten açık değilse o tahmini ASLA verme.
+- Kapalı, sıfır oranlı veya veri içinde bulunmayan bir seçeneği açık market gibi gösterme.
+- Bir maçta sadece gerçekten açık olan seçenekler arasından seçim yap.
+- Kullanıcı sayı verdiyse aynı MatchID'yi tekrarlama; yeterli gerçek aday yoksa sayı doldurma.
+- Piyasa olasılığı yalnızca seçimin bulunduğu gerçek marketin açık seçeneklerinden hesaplanır.
+- "Karma kombinasyon" isteğinde amaç en düşük oranlı 7 seçimi kopyalamak değildir. Açık marketler arasından farklı market türlerini, piyasa gücünü, veri uyumunu ve riski birlikte değerlendir.
+- İY/MS isteğinde yalnızca gerçek İY/MS marketindeki seçenekleri kullan. 1/1 ve 2/2 düz favorileri sürpriz olarak adlandırma.
+- Sürpriz İY/MS için X/1, X/2, 1/X, 2/X, 1/2, 2/1 gibi ilk yarı ile maç sonucunun farklı olduğu gerçek seçenekleri değerlendir.
+- Güven puanı başarı garantisi değildir.
+- Türkçe, net ve profesyonel cevap ver.
 """
 
 @app.get("/")
@@ -79,7 +75,7 @@ async def get_match_detail_alias(match_id: int):
 def get_leagues():
     return []
 
-def compact_data(value, max_chars=50000):
+def compact_data(value, max_chars=60000):
     try:
         return json.dumps(value, ensure_ascii=False, default=str)[:max_chars]
     except Exception:
@@ -104,8 +100,7 @@ def match_identity(row):
     return str(row.get("MatchID") or row.get("matchID") or row.get("id") or row.get("Id") or "")
 
 def dedupe_rows(rows):
-    seen = set()
-    unique = []
+    seen, unique = set(), []
     for row in rows:
         key = match_identity(row)
         if key and key in seen:
@@ -134,25 +129,35 @@ def walk_dicts(value):
             yield from walk_dicts(child)
 
 def extract_markets(detail):
+    """NOSYAPI detayındaki yalnızca gerçek, pozitif oranı bulunan açık marketleri çıkarır."""
+    if detail is None:
+        return []
     markets = []
+    seen = set()
     for item in walk_dicts(detail):
         name = item.get("gameName") or item.get("GameName") or item.get("name")
         odds = item.get("odds") or item.get("Odds") or item.get("gameOdds")
-        if name and isinstance(odds, list):
-            clean_odds = []
-            for odd in odds:
-                if not isinstance(odd, dict):
-                    continue
-                value = odd.get("value")
-                price = odd.get("odd")
-                try:
-                    price = float(price)
-                except (TypeError, ValueError):
-                    continue
-                if value not in (None, "") and price > 0:
-                    clean_odds.append({"value": str(value).strip(), "odd": price})
-            if clean_odds:
-                markets.append({"gameName": str(name), "type": str(item.get("type") or ""), "odds": clean_odds})
+        if not name or not isinstance(odds, list):
+            continue
+        clean = []
+        for odd in odds:
+            if not isinstance(odd, dict):
+                continue
+            value = odd.get("value")
+            price = odd.get("odd")
+            try:
+                price = float(price)
+            except (TypeError, ValueError):
+                continue
+            if value not in (None, "") and price > 0:
+                clean.append({"value": str(value).strip(), "odd": price})
+        if not clean:
+            continue
+        key = normalize_text(name)
+        if key in seen:
+            continue
+        seen.add(key)
+        markets.append({"gameName": str(name).strip(), "type": str(item.get("type") or ""), "odds": clean})
     return markets
 
 def find_iyms_market(detail):
@@ -160,26 +165,14 @@ def find_iyms_market(detail):
     for market in extract_markets(detail):
         name = normalize_text(market["gameName"])
         compact = name.replace(" ", "")
-        is_iyms = (
-            ("ilk yarı" in name and "maç sonucu" in name)
-            or "ilk yarı/maç sonucu" in name
-            or "ilk yarı-maç sonucu" in name
-            or "iy/ms" in compact
-            or "iyms" in compact
-        )
-        if is_iyms:
+        if (("ilk yarı" in name and "maç sonucu" in name) or "ilk yarı/maç sonucu" in name or "ilk yarı-maç sonucu" in name or "iy/ms" in compact or "iyms" in compact):
             candidates.append(market)
-    if not candidates:
-        return None
-    # En dolu gerçek marketi tercih et.
-    return max(candidates, key=lambda x: len(x["odds"]))
+    return max(candidates, key=lambda x: len(x["odds"])) if candidates else None
 
 def market_probability(odds):
     raw = {x["value"]: 1.0 / x["odd"] for x in odds if x.get("odd", 0) > 0}
     total = sum(raw.values())
-    if not total:
-        return {}
-    return {key: value / total for key, value in raw.items()}
+    return {key: value / total for key, value in raw.items()} if total else {}
 
 def is_straight_result(value):
     compact = normalize_text(value).replace(" ", "")
@@ -191,17 +184,19 @@ def is_surprise_result(value):
 
 def parse_iyms_market(market):
     probs = market_probability(market["odds"])
-    options = []
-    for item in market["odds"]:
-        value = item["value"]
-        options.append({"value": value, "odd": item["odd"], "probability": round(probs.get(value, 0) * 100, 2), "surprise": is_surprise_result(value) and not is_straight_result(value)})
-    surprise = [x for x in options if x["surprise"]]
-    surprise.sort(key=lambda x: x["probability"], reverse=True)
+    options = [{"value": x["value"], "odd": x["odd"], "probability": round(probs.get(x["value"], 0) * 100, 2), "surprise": is_surprise_result(x["value"]) and not is_straight_result(x["value"])} for x in market["odds"]]
+    surprise = sorted([x for x in options if x["surprise"]], key=lambda x: x["probability"], reverse=True)
     return {"market_name": market["gameName"], "options": options, "surprise_options": surprise}
 
 def slim_match(row):
-    preferred = ("MatchID", "Date", "Time", "DateTime", "Country", "League", "Teams", "Team1", "Team2", "BetCount", "HomeWin", "Draw", "AwayWin", "Under15", "Over15", "Under25", "Over25", "Under35", "Over35")
-    return {key: row[key] for key in preferred if key in row and row[key] not in (None, "")}
+    keys = ("MatchID", "Date", "Time", "DateTime", "Country", "League", "Teams", "Team1", "Team2", "BetCount")
+    return {key: row[key] for key in keys if key in row and row[key] not in (None, "")}
+
+def market_payload(markets, limit=160):
+    """Gemini'ye yalnızca açık marketleri ve gerçek seçeneklerini verir."""
+    preferred_words = ("maç sonucu", "karşılıklı gol", "alt/üst", "ilk yarı", "iy/ms", "ilk yarı/maç sonucu")
+    ordered = sorted(markets, key=lambda m: (0 if any(w in normalize_text(m["gameName"]) for w in preferred_words) else 1, m["gameName"]))
+    return ordered[:limit]
 
 async def cache_get(match_id: int):
     if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
@@ -209,7 +204,7 @@ async def cache_get(match_id: int):
     headers = {"apikey": SUPABASE_SERVICE_ROLE_KEY, "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}"}
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(f"{SUPABASE_URL}/rest/v1/ai_predictions", headers=headers, params={"match_key": f"eq.{match_id}", "select": "analysis,created_at", "limit": "1"})
+            response = await client.get(f"{SUPABASE_URL}/rest/v1/ai_predictions", headers=headers, params={"match_key": f"eq.{match_id}", "select": "analysis", "limit": "1"})
         if response.status_code == 200:
             rows = response.json()
             if rows and rows[0].get("analysis"):
@@ -257,8 +252,7 @@ async def analyze_match_with_ai(match_id: int):
         return {"analysis": cached, "source": "cache"}
     match_data = await get_match_detail(match_id)
     prompt = f"""{EXPERT_CORE}
-Bu seçili maç için kapsamlı uzman analizi üret.
-Yanıtı SADECE geçerli JSON olarak ver.
+Bu seçili maç için kapsamlı uzman analizi üret. Yanıtı geçerli JSON olarak ver.
 Alanlar: mac_ozeti, takimlarin_durumu, olasi_senaryo, ms_tahmini, kg_tahmini, alt_ust_tahmini, ilk_yari_tahmini, ht_ft_tahmini, surpriz_ihtimali, en_guvenilir_tahminler, risk_seviyesi, tahmin_gerekcesi.
 Her tahmin nesnesinde tahmin, guven ve risk alanları kullan. Tahmin alanını iç içe nesne yapma.
 SEÇİLİ MAÇ GERÇEK API VERİSİ:
@@ -273,18 +267,7 @@ SEÇİLİ MAÇ GERÇEK API VERİSİ:
     return {"analysis": analysis, "source": "gemini"}
 
 async def get_chat_match_context(match_id: int):
-    try:
-        return await get_match_detail(match_id)
-    except HTTPException as detail_error:
-        try:
-            listing = await get_matches()
-            rows = extract_rows(listing)
-            found = next((row for row in rows if match_identity(row) == str(match_id)), None)
-            if found is not None:
-                return found
-        except HTTPException:
-            pass
-        raise detail_error
+    return await get_match_detail(match_id)
 
 @app.post("/matches/{match_id}/chat")
 async def chat_about_match(match_id: int, request: Request):
@@ -298,53 +281,116 @@ async def chat_about_match(match_id: int, request: Request):
     history = payload.get("history") or []
     match_data = await get_chat_match_context(match_id)
     prompt = f"""{EXPERT_CORE}
-Şu anda MAÇ ÖZEL MODUNDASIN.
-SEÇİLİ MAÇ GERÇEK API VERİSİ:
+MAÇ ÖZEL MODU.
+GERÇEK MAÇ API VERİSİ:
 {compact_data(match_data)}
 ÖNCEKİ SOHBET:
 {compact_data(history, 12000)}
 KULLANICI SORUSU:
-{message}"""
+{message}
+Yalnızca gerçek API verisindeki açık marketleri kullan."""
     return {"reply": await gemini_generate(prompt)}
 
 async def get_today_expert_pool():
     today = datetime.now().date().isoformat()
-    dated = await get_matches(today)
-    rows = dedupe_rows(extract_rows(dated))
+    rows = dedupe_rows(extract_rows(await get_matches(today)))
     if len(rows) < 5:
-        current = await get_matches()
-        current_rows = dedupe_rows(extract_rows(current))
+        current = dedupe_rows(extract_rows(await get_matches()))
         known = {match_identity(x) for x in rows if match_identity(x)}
-        for row in current_rows:
+        for row in current:
             key = match_identity(row)
-            row_date = match_date(row)
             if key and key in known:
                 continue
-            if row_date and row_date != today:
+            if match_date(row) and match_date(row) != today:
                 continue
             rows.append(row)
             if key:
                 known.add(key)
     return dedupe_rows(rows)
 
+async def inspect_match(row):
+    key = match_identity(row)
+    if not key:
+        return None
+    try:
+        detail = await get_match_detail(int(key))
+    except HTTPException:
+        return None
+    markets = extract_markets(detail)
+    iyms = find_iyms_market(detail)
+    parsed_iyms = parse_iyms_market(iyms) if iyms else None
+    return {
+        "match": slim_match(row),
+        "markets": market_payload(markets),
+        "iyms_market_open": bool(parsed_iyms),
+        "iyms": parsed_iyms,
+    }
+
 async def build_market_aware_pool(rows):
-    """Her maçın tam market detayını kontrol eder; özellikle İY/MS için yalnızca marketi gerçekten açık maçları geçirir."""
-    rows = dedupe_rows(rows)
-
-    async def inspect(row):
-        key = match_identity(row)
-        if not key:
-            return None
-        try:
-            detail = await get_match_detail(int(key))
-        except HTTPException:
-            detail = None
-        iyms = find_iyms_market(detail) if detail is not None else None
-        parsed = parse_iyms_market(iyms) if iyms else None
-        return {"match": slim_match(row), "iyms_market_open": bool(parsed), "iyms": parsed}
-
-    inspected = await asyncio.gather(*(inspect(row) for row in rows))
+    inspected = await asyncio.gather(*(inspect_match(row) for row in dedupe_rows(rows)))
     return [x for x in inspected if x]
+
+def wants_iyms(message):
+    text = normalize_text(message)
+    return bool(re.search(r"iy\s*/?\s*ms|i[yı]\s*[/\\-]\s*m[sş]|ilk\s*yari\s*/?\s*mac\s*sonucu|ilk\s*yari.*mac\s*sonucu", text))
+
+def requested_count(message):
+    m = re.search(r"\b(\d{1,2})\s*(?:maç|adet|tane)\b", normalize_text(message))
+    return int(m.group(1)) if m else None
+
+def parse_json_response(raw):
+    cleaned = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        return None
+
+def validate_selections(result, pool, requested):
+    if not isinstance(result, dict) or not isinstance(result.get("selections"), list):
+        return None
+    by_match = {str(x["match"]["MatchID"]): x for x in pool if x.get("match", {}).get("MatchID") is not None}
+    valid = []
+    used = set()
+    for item in result["selections"]:
+        if not isinstance(item, dict):
+            continue
+        mid = str(item.get("match_id") or "")
+        market_name = normalize_text(item.get("market") or "")
+        selection = str(item.get("selection") or "").strip()
+        if not mid or mid not in by_match or mid in used or not market_name or not selection:
+            continue
+        match = by_match[mid]
+        found_market = None
+        for market in match.get("markets", []):
+            if normalize_text(market.get("gameName")) == market_name:
+                found_market = market
+                break
+        if not found_market:
+            continue
+        found_option = next((o for o in found_market.get("odds", []) if normalize_text(o.get("value")) == normalize_text(selection)), None)
+        if not found_option:
+            continue
+        valid.append({"match_id": mid, "match": match_name(match["match"]), "market": found_market["gameName"], "selection": found_option["value"], "odd": found_option["odd"], "confidence": item.get("confidence", ""), "risk": item.get("risk", ""), "reason": item.get("reason", "")})
+        used.add(mid)
+    if requested and len(valid) < requested:
+        return None
+    return valid
+
+def format_validated(result, requested):
+    intro = result.get("intro") if isinstance(result, dict) else None
+    lines = [intro or "Bugünün gerçek açık marketleri karşılaştırılarak oluşturulan Bay Tahmin analizi:"]
+    for i, x in enumerate(result["valid_selections"], 1):
+        lines.append(f"\n### {i}. {x['match']} (MatchID: {x['match_id']})")
+        lines.append(f"- **Market:** {x['market']}")
+        lines.append(f"- **Tahmin:** {x['selection']}")
+        lines.append(f"- **Gerçek Oran:** {x['odd']}")
+        if x.get("confidence"):
+            lines.append(f"- **Güven:** {x['confidence']}")
+        if x.get("risk"):
+            lines.append(f"- **Risk:** {x['risk']}")
+        if x.get("reason"):
+            lines.append(f"- **Veri gerekçesi:** {x['reason']}")
+    return "\n".join(lines)
 
 @app.post("/chat")
 async def general_chat(request: Request):
@@ -356,56 +402,52 @@ async def general_chat(request: Request):
     if not message:
         raise HTTPException(status_code=400, detail="Mesaj boş olamaz.")
     history = payload.get("history") or []
-    today_rows = await get_today_expert_pool()
+    requested = requested_count(message)
+    pool = await build_market_aware_pool(await get_today_expert_pool())
 
-    wants_iyms = bool(re.search(r"iy\s*/?\s*ms|i[yı]\s*[/\\-]\s*m[sş]|ilk\s*yari\s*/?\s*mac\s*sonucu|ilk\s*yari.*mac\s*sonucu", normalize_text(message)))
-    if wants_iyms:
-        market_pool = await build_market_aware_pool(today_rows)
-        eligible = [x for x in market_pool if x["iyms_market_open"] and x.get("iyms", {}).get("surprise_options")]
-        # En güçlü gerçek sürpriz seçenekleri önce çıkar; Gemini bunların arasından uzman filtresi yapacak.
-        eligible.sort(key=lambda x: max((o["probability"] for o in x["iyms"]["surprise_options"]), default=0), reverse=True)
-        pool = eligible
-        instruction = """
-BU İSTEK İY/MS VE SÜRPRİZ ODAKLI.
-SADECE aşağıdaki pool içinde iyms_market_open=true olan maçları kullan.
-Her maçın iyms.options alanı İddaa'nın GERÇEK açık İY/MS marketinden alınmıştır.
-Kullanıcı sürpriz istiyor: 1/1 ve 2/2 DÜZ senaryolarını sürpriz kabul etme.
-Önceliği X/1, X/2, 1/X, 2/X, 1/2, 2/1 gibi ilk yarı ile maç sonunun farklı olduğu gerçek market seçeneklerine ver.
-Her maç için önce en olası sürpriz senaryoyu seç. Piyasa olasılığı çok düşük olan yüksek oranlı senaryoyu sırf sürpriz diye öne çıkarma.
-"""
-    else:
-        pool = await build_market_aware_pool(today_rows)
-        instruction = """
-Kullanıcının istediği marketi önce gerçek detay marketlerinde bul.
-Market gerçekten açık değilse o maç için ilgili market tahmini üretme. Doğrudan açık olan marketleri tercih et.
-"""
+    if wants_iyms(message):
+        pool = [x for x in pool if x.get("iyms_market_open")]
 
-    requested = None
-    match_count = re.search(r"\b(\d{1,2})\s*(?:maç|adet|tane)\b", normalize_text(message))
-    if match_count:
-        requested = int(match_count.group(1))
+    if not pool:
+        return {"reply": "Bugünün gerçek bülteninde bu isteği karşılayacak doğrulanmış açık market adayı bulunamadı. Marketi kapalı bir seçeneği tahmin gibi göstermiyorum."}
 
     prompt = f"""{EXPERT_CORE}
-GENEL BAY TAHMİN ANALİZİ.
-
-{instruction}
-
-GERÇEK BUGÜNÜN ADAY HAVUZU:
-{compact_data(pool, 60000)}
+Aşağıdaki pool SADECE gerçek İddaa detay API'sinden alınmış açık marketleri içerir. Bir market veya seçenek pool içinde yoksa KAPALI/YOK kabul et.
 
 KULLANICI İSTEĞİ:
 {message}
 
+BUGÜNÜN DOĞRULANMIŞ MARKET HAVUZU:
+{compact_data(pool)}
+
 ÖNCEKİ SOHBET:
 {compact_data(history, 10000)}
 
-ÇIKTI KURALLARI:
-- Kullanıcı sayı verdiyse ve yeterli gerçek aday varsa tam o sayıda FARKLI maç ver.
-- İY/MS isteğinde markette gerçekten bulunmayan hiçbir maçı listeleme.
-- Sürpriz istenen bir soruda düz 1/1 veya 2/2'yi sürpriz diye sunma.
-- Her sonuçta gerçek marketteki tahmin değerini ve gerçek oranını yaz.
-- Piyasa olasılığını oranlardan hesapla; uydurma istatistik ekleme.
-- Güven puanı, piyasa olasılığından bağımsız bir uzman değerlendirmesi olabilir ama veri dışı gerekçe kullanma.
-- Yeterli aday yoksa eksik sayıyı doldurmak için başka marketi veya marketi kapalı maçı kullanma.
+GÖREV:
+- Kullanıcının istediği sayıda farklı maç seç.
+- "Karma kombinasyon" ise sadece oranı en düşük olanları kopyalama; farklı açık market türlerini ve veri uyumunu değerlendir.
+- Her seçim için market adı ve seçim değeri pool'daki gerçek metinle birebir eşleşmeli.
+- Gerçek markette olmayan hiçbir seçimi üretme.
+- Kullanıcı özel olarak İY/MS veya sürpriz istiyorsa yalnızca gerçek İY/MS marketini kullan; 1/1 ve 2/2'yi sürpriz sayma.
+- Güven ve gerekçe yalnızca pool'daki verilere dayanmalı.
+- Yeterli aday yoksa daha fazla seçim uydurma.
+
+SADECE şu JSON biçiminde cevap ver:
+{{"intro":"kısa açıklama","selections":[{{"match_id":"...","market":"pool'daki tam market adı","selection":"pool'daki tam seçim değeri","confidence":"...","risk":"...","reason":"..."}}]}}
 """
-    return {"reply": await gemini_generate(prompt)}
+
+    parsed = parse_json_response(await gemini_generate(prompt))
+    valid = validate_selections(parsed, pool, requested) if parsed else None
+    if valid is None:
+        # Doğrulama başarısızsa kapalı marketi kullanıcıya göstermek yerine güvenli şekilde tekrar iste.
+        retry = f"""{EXPERT_CORE}
+Yalnızca aşağıdaki doğrulanmış açık marketlerden seçim yap. Her market ve seçim birebir eşleşmek zorunda.
+İSTEK: {message}
+HAVUZ: {compact_data(pool)}
+JSON: {{\"intro\":\"...\",\"selections\":[{{\"match_id\":\"...\",\"market\":\"tam market adı\",\"selection\":\"tam seçim\",\"confidence\":\"...\",\"risk\":\"...\",\"reason\":\"...\"}}]}}"""
+        parsed = parse_json_response(await gemini_generate(retry))
+        valid = validate_selections(parsed, pool, requested) if parsed else None
+    if valid is None:
+        return {"reply": "Bay Tahmin bu isteği gerçek açık marketlerle doğrulayamadı; kapalı veya bulunmayan bir bahsi tahmin gibi göstermiyorum. Lütfen isteği tekrar deneyin."}
+    parsed["valid_selections"] = valid
+    return {"reply": format_validated(parsed, requested)}
