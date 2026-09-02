@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 from datetime import datetime, timedelta
@@ -121,9 +122,21 @@ async def cache_put(match_id: int, analysis: dict):
 async def gemini_generate(prompt: str) -> str:
     if not GEMINI_API_KEY:
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY environment variable bulunamadı.")
+
+    # google-genai'nin senkron istemcisini FastAPI'nin async event loop'undan
+    # doğrudan çağırmak yerine ayrı bir thread'de çalıştırıyoruz. Her istekte
+    # istemciyi oluşturup aynı thread içinde kapatmak, kapatılmış transport
+    #/client yaşam döngüsü hatasını önler.
+    def generate_sync() -> str:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        try:
+            response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+            return (response.text or "").strip()
+        finally:
+            client.close()
+
     try:
-        response = genai.Client(api_key=GEMINI_API_KEY).models.generate_content(model=GEMINI_MODEL, contents=prompt)
-        text = (response.text or "").strip()
+        text = await asyncio.to_thread(generate_sync)
         if not text:
             raise HTTPException(status_code=502, detail="Gemini boş yanıt döndürdü.")
         return text
