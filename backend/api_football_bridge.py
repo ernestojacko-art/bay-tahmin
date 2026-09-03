@@ -2,7 +2,7 @@ import hashlib
 import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 
@@ -12,9 +12,11 @@ KEY = os.getenv("API_FOOTBALL_KEY") or os.getenv("APIFOOTBALL_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
-# Persistent cache defaults. API-Football itself recommends caching by data freshness.
+# Cache TTLs are matched to the freshness of each API-Football data class.
 FIXTURES_TTL = int(os.getenv("API_FOOTBALL_FIXTURES_CACHE_TTL", "900"))
 DETAIL_TTL = int(os.getenv("API_FOOTBALL_DETAIL_CACHE_TTL", "10800"))
+PREDICTION_TTL = int(os.getenv("API_FOOTBALL_PREDICTION_CACHE_TTL", "3600"))
+ODDS_TTL = int(os.getenv("API_FOOTBALL_ODDS_CACHE_TTL", "10800"))
 LIVE_TTL = int(os.getenv("API_FOOTBALL_LIVE_CACHE_TTL", "30"))
 
 _MEMORY = {}
@@ -72,7 +74,6 @@ def _persistent_get(key):
                 return None
         return row.get("response")
     except Exception:
-        # Cache failure must never take the API-Football service down.
         return None
 
 
@@ -81,14 +82,15 @@ def _persistent_put(key, endpoint, params, response, ttl):
         return
     try:
         now = time.time()
+        now_dt = datetime.fromtimestamp(now, tz=timezone.utc)
         payload = {
             "cache_key": key,
             "endpoint": endpoint,
             "params": params,
             "response": response,
-            "fetched_at": datetime.fromtimestamp(now, tz=datetime.now().astimezone().tzinfo).isoformat(),
-            "expires_at": datetime.fromtimestamp(now + ttl, tz=datetime.now().astimezone().tzinfo).isoformat(),
-            "updated_at": datetime.fromtimestamp(now, tz=datetime.now().astimezone().tzinfo).isoformat(),
+            "fetched_at": now_dt.isoformat(),
+            "expires_at": datetime.fromtimestamp(now + ttl, tz=timezone.utc).isoformat(),
+            "updated_at": now_dt.isoformat(),
         }
         httpx.post(
             f"{SUPABASE_URL}/rest/v1/api_football_cache",
@@ -97,7 +99,6 @@ def _persistent_put(key, endpoint, params, response, ttl):
             timeout=10,
         ).raise_for_status()
     except Exception:
-        # Cache persistence is best-effort; live API data remains authoritative.
         return
 
 
@@ -173,11 +174,34 @@ def _map(f):
     }
 
 
+def _cache_scheduled_match_summaries(rows):
+    """Persist every not-yet-started fixture without spending another API request."""
+    for row in rows:
+        if row.get("status") != "scheduled":
+            continue
+        fixture_id = row.get("id")
+        if not fixture_id:
+            continue
+        key = f"scheduled-match:{fixture_id}"
+        _persistent_put(
+            key,
+            "fixtures-summary",
+            {"fixture": fixture_id},
+            row,
+            FIXTURES_TTL,
+        )
+
+
 def patch_main(m):
     async def get_matches(date=None):
-        d = date or datetime.now().date().isoformat()
+        d = date or datetime.now(timezone.utc).date().isoformat()
         payload, cached = _cached_api("fixtures", {"date": d}, FIXTURES_TTL)
         rows = [_map(x) for x in payload.get("response", [])]
+
+        # Store upcoming fixtures individually as durable match-cache records.
+        # This does not call API-Football again; it only persists data already fetched.
+        _cache_scheduled_match_summaries(rows)
+
         return {
             "data": rows,
             "source": "supabase-cache" if cached else "api-football",
@@ -192,16 +216,16 @@ def patch_main(m):
             raise m.HTTPException(404, "Maç bulunamadı.")
 
         fixture = fixtures[0]
+        match = _map(fixture)
         base = {
             "fixture": fixture,
-            "match": _map(fixture),
+            "match": match,
             "source": "supabase-cache" if cached else "api-football",
             "cache": {"hit": cached, "ttl": DETAIL_TTL},
         }
 
-        # Prediction and odds have their own persistent cache keys.
         try:
-            pr, pr_cached = _cached_api("predictions", {"fixture": match_id}, 3600)
+            pr, pr_cached = _cached_api("predictions", {"fixture": match_id}, PREDICTION_TTL)
             rows = pr.get("response", [])
             base["prediction"] = rows[0].get("predictions") if rows else None
             base["prediction_cache"] = "supabase-cache" if pr_cached else "api-football"
@@ -210,7 +234,7 @@ def patch_main(m):
             base["prediction_cache"] = "unavailable"
 
         try:
-            od, od_cached = _cached_api("odds", {"fixture": match_id}, 10800)
+            od, od_cached = _cached_api("odds", {"fixture": match_id}, ODDS_TTL)
             markets = []
             for bookmaker_row in od.get("response", []):
                 bookmaker = bookmaker_row.get("bookmaker", {})
@@ -235,6 +259,16 @@ def patch_main(m):
         except Exception:
             base["markets"] = []
             base["odds_cache"] = "unavailable"
+
+        # Keep the durable per-match summary fresh while the fixture is still upcoming.
+        if match.get("status") == "scheduled":
+            _persistent_put(
+                f"scheduled-match:{match_id}",
+                "fixtures-summary",
+                {"fixture": match_id},
+                match,
+                FIXTURES_TTL,
+            )
 
         return base
 
