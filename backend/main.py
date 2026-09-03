@@ -439,7 +439,6 @@ SADECE şu JSON biçiminde cevap ver:
     parsed = parse_json_response(await gemini_generate(prompt))
     valid = validate_selections(parsed, pool, requested) if parsed else None
     if valid is None:
-        # Doğrulama başarısızsa kapalı marketi kullanıcıya göstermek yerine güvenli şekilde tekrar iste.
         retry = f"""{EXPERT_CORE}
 Yalnızca aşağıdaki doğrulanmış açık marketlerden seçim yap. Her market ve seçim birebir eşleşmek zorunda.
 İSTEK: {message}
@@ -451,3 +450,10 @@ JSON: {{\"intro\":\"...\",\"selections\":[{{\"match_id\":\"...\",\"market\":\"ta
         return {"reply": "Bay Tahmin bu isteği gerçek açık marketlerle doğrulayamadı; kapalı veya bulunmayan bir bahsi tahmin gibi göstermiyorum. Lütfen isteği tekrar deneyin."}
     parsed["valid_selections"] = valid
     return {"reply": format_validated(parsed, requested)}
+
+# Direct runtime integration: Render starts `main:app`, so apply the API-Football bridge
+# after all existing routes/functions have been defined. This does not depend on sitecustomize.
+import sys
+if os.getenv("API_FOOTBALL_KEY") or os.getenv("APIFOOTBALL_KEY"):
+    from api_football_bridge import patch_main
+    patch_main(sys.modules[__name__])
