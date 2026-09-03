@@ -175,16 +175,15 @@ def _map(f):
 
 
 def _cache_scheduled_match_summaries(rows):
-    """Persist every not-yet-started fixture without spending another API request."""
+    """Persist upcoming fixtures already received; this does not spend API-Football quota."""
     for row in rows:
         if row.get("status") != "scheduled":
             continue
         fixture_id = row.get("id")
         if not fixture_id:
             continue
-        key = f"scheduled-match:{fixture_id}"
         _persistent_put(
-            key,
+            f"scheduled-match:{fixture_id}",
             "fixtures-summary",
             {"fixture": fixture_id},
             row,
@@ -198,14 +197,33 @@ def patch_main(m):
         payload, cached = _cached_api("fixtures", {"date": d}, FIXTURES_TTL)
         rows = [_map(x) for x in payload.get("response", [])]
 
-        # Store upcoming fixtures individually as durable match-cache records.
-        # This does not call API-Football again; it only persists data already fetched.
-        _cache_scheduled_match_summaries(rows)
+        # Upcoming fixtures are persisted individually only when the daily source was refreshed.
+        if not cached:
+            _cache_scheduled_match_summaries(rows)
+
+        # Live data has its own short cache and replaces the corresponding daily fixture snapshot.
+        live_rows = []
+        live_cached = False
+        try:
+            live_payload, live_cached = _cached_api("fixtures", {"live": "all"}, LIVE_TTL)
+            live_rows = [_map(x) for x in live_payload.get("response", [])]
+            by_id = {row.get("id"): row for row in rows}
+            for live in live_rows:
+                by_id[live.get("id")] = live
+            rows = list(by_id.values())
+        except Exception:
+            # The normal daily fixture list remains available if live polling fails.
+            live_rows = []
 
         return {
             "data": rows,
             "source": "supabase-cache" if cached else "api-football",
             "cache": {"hit": cached, "ttl": FIXTURES_TTL},
+            "live": {
+                "count": len(live_rows),
+                "source": "supabase-cache" if live_cached else ("api-football" if live_rows else "unavailable"),
+                "cache": {"hit": live_cached, "ttl": LIVE_TTL},
+            },
         }
 
     async def get_match_detail(match_id: int):
@@ -260,7 +278,6 @@ def patch_main(m):
             base["markets"] = []
             base["odds_cache"] = "unavailable"
 
-        # Keep the durable per-match summary fresh while the fixture is still upcoming.
         if match.get("status") == "scheduled":
             _persistent_put(
                 f"scheduled-match:{match_id}",
