@@ -1,6 +1,7 @@
 import asyncio
 import os
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import HTTPException
@@ -11,6 +12,9 @@ KEY = os.getenv("FIVE_DOLLAR_API_KEY")
 _MATCH_CACHE = {}
 _MATCH_CACHE_TTL_SECONDS = 15 * 60
 _MATCH_STALE_TTL_SECONDS = 6 * 60 * 60
+_REQUEST_LOCK = asyncio.Lock()
+_LAST_REQUEST_AT = 0.0
+_REQUEST_SPACING_SECONDS = 3.2
 
 
 def _headers():
@@ -19,12 +23,24 @@ def _headers():
     return {"Authorization": f"Bearer {KEY}", "Accept": "application/json"}
 
 
+async def _paced_request(url: str, params: dict):
+    global _LAST_REQUEST_AT
+    async with _REQUEST_LOCK:
+        now = asyncio.get_running_loop().time()
+        wait = _REQUEST_SPACING_SECONDS - (now - _LAST_REQUEST_AT)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            response = await client.get(url, headers=_headers(), params=params)
+        _LAST_REQUEST_AT = asyncio.get_running_loop().time()
+        return response
+
+
 async def _get(path: str, params: dict | None = None):
     last_error = None
     for attempt in range(4):
         try:
-            async with httpx.AsyncClient(timeout=45.0) as client:
-                response = await client.get(f"{BASE}/{path.lstrip('/')}", headers=_headers(), params=params or {})
+            response = await _paced_request(f"{BASE}/{path.lstrip('/')}", params or {})
         except httpx.HTTPError as exc:
             last_error = exc
             if attempt < 3:
@@ -35,16 +51,16 @@ async def _get(path: str, params: dict | None = None):
         if response.status_code == 429:
             retry_after = response.headers.get("Retry-After")
             try:
-                delay = min(max(float(retry_after), 1.0), 20.0) if retry_after else 3.0 * (attempt + 1)
+                delay = max(float(retry_after), 1.0) if retry_after else 60.0
             except ValueError:
-                delay = 3.0 * (attempt + 1)
-            if attempt < 3:
+                delay = 60.0
+            if attempt < 3 and delay <= 75:
                 await asyncio.sleep(delay)
                 continue
-            raise HTTPException(status_code=502, detail="5DollarFootballAPI geçici hız sınırına ulaştı; lütfen birkaç saniye sonra tekrar deneyin.")
+            raise HTTPException(status_code=503, detail=f"5DollarFootballAPI hız sınırı aktif. Retry-After: {int(delay)} saniye.")
 
         if response.status_code in {500, 502, 503, 504} and attempt < 3:
-            await asyncio.sleep(1.5 * (attempt + 1))
+            await asyncio.sleep(2.0 * (attempt + 1))
             continue
 
         if response.status_code != 200:
@@ -61,12 +77,15 @@ async def _get(path: str, params: dict | None = None):
 
 
 def _day_window(date: str | None):
+    tz = ZoneInfo("Europe/Istanbul")
     if date:
-        day = datetime.fromisoformat(date).replace(tzinfo=timezone.utc)
+        day = datetime.fromisoformat(date).replace(tzinfo=tz)
     else:
-        now = datetime.now(timezone.utc)
-        day = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
-    return int(day.timestamp()), int((day + timedelta(days=1)).timestamp())
+        now = datetime.now(tz)
+        day = datetime(now.year, now.month, now.day, tzinfo=tz)
+    start = day.astimezone(timezone.utc)
+    end = (day + timedelta(days=1)).astimezone(timezone.utc)
+    return int(start.timestamp()), int(end.timestamp())
 
 
 def _status(value):
@@ -178,7 +197,7 @@ def _markets_from_odds(odds_payload, live=False):
 
 
 async def get_matches(date=None):
-    cache_key = str(date or datetime.now(timezone.utc).date())
+    cache_key = str(date or datetime.now(ZoneInfo("Europe/Istanbul")).date())
     now_ts = datetime.now(timezone.utc).timestamp()
     cached = _MATCH_CACHE.get(cache_key)
     if cached and now_ts - cached[0] < _MATCH_CACHE_TTL_SECONDS:
@@ -188,7 +207,7 @@ async def get_matches(date=None):
 
     start, end = _day_window(date)
     try:
-        payload = await _get("fixtures", {"start_time": start, "end_time": end, "status": "all", "lang": "en"})
+        payload = await _get("fixtures", {"start_time": start, "end_time": end, "status": "all", "lang": "en", "per_page": 100})
     except HTTPException:
         if cached and now_ts - cached[0] < _MATCH_STALE_TTL_SECONDS:
             result = dict(cached[1])
