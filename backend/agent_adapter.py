@@ -46,29 +46,25 @@ async def _fixture_rows(target):
 
 async def get_matches_for_local_date(target):
     pairs=await _fixture_rows(target)
-    try:
-        payload=await five._get("fixtures",{"start_time":local_day_window(target)[0],"end_time":local_day_window(target)[1],"status":"all","lang":"en","include":"odds","per_page":50})
-        by_id={str(x.get("id")):x for x in payload.get("data") or []}
-        out=[]
-        for row,fixture in pairs:
-            full=by_id.get(str(row["MatchID"]))
-            if full is not None:
-                row["_markets"]=five._markets_from_odds({"data":{"odds":full.get("odds") or {}}},live=row.get("Status")=="live")
-            else: row["_markets"]=[]
-            out.append(row)
-        return out
-    except HTTPException as exc:
-        if exc.status_code != 502 or "insufficient_plan" not in str(exc.detail).lower(): raise
-        sem=asyncio.Semaphore(4)
-        async def load(row):
-            async with sem:
-                try:
-                    odds=await five._get(f"fixtures/{row['MatchID']}/odds",{"bookmakers":"bet365","lang":"en"})
-                    row["_markets"]=five._markets_from_odds(odds,live=row.get("Status")=="live")
-                except Exception: row["_markets"] = []
-                return row
-        rows=[p[0] for p in pairs[:19]]
-        return await asyncio.gather(*(load(r) for r in rows))
+    if not pairs: return []
+
+    # Free/Community plans cannot expand odds on the list endpoint, while the
+    # single-fixture endpoint includes the same Bet365 odds. Fetch those details
+    # concurrently and cache them. This removes the old 3.2s/request bottleneck.
+    sem=asyncio.Semaphore(10)
+    rows=[p[0] for p in pairs[:19]]  # keep the 20 req/min ceiling: 1 list + 19 details
+
+    async def load(row):
+        async with sem:
+            try:
+                detail=await five._get(f"fixtures/{row['MatchID']}",{"lang":"en"})
+                fixture=detail.get("data") or {}
+                row["_markets"]=five._markets_from_odds({"data":{"odds":fixture.get("odds") or {}}},live=row.get("Status")=="live")
+            except Exception:
+                row["_markets"]=[]
+            return row
+
+    return await asyncio.gather(*(load(r) for r in rows))
 
 def _norm(v): return re.sub(r"\s+"," ",str(v or "").strip().lower())
 def requested_count(m):
@@ -123,14 +119,15 @@ async def general_chat(request,main_module):
     message=str(payload.get("message") or payload.get("question") or "").strip()
     if not message:raise HTTPException(status_code=400,detail="Mesaj boş olamaz.")
     history=payload.get("history") or []
-    target,label=resolve_requested_date(message); rows=await get_matches_for_local_date(target)
+    target,label=resolve_requested_date(message)
+    rows=await asyncio.wait_for(get_matches_for_local_date(target),timeout=12.0)
     if not rows:return {"reply":f"{target.strftime('%d.%m.%Y')} tarihinde 5DollarFootballAPI'den doğrulanmış maç bulunamadı.","date":target.isoformat(),"source":"5dollarfootballapi"}
     pool=[{"match":r,"markets":r.get("_markets") or [],"detail":None} for r in rows]
     selections=choose_best(pool,message,requested_count(message))
     if not selections:return {"reply":f"{target.strftime('%d.%m.%Y')} tarihindeki {len(rows)} maç içinde isteğini karşılayan doğrulanmış açık market bulunamadı.","date":target.isoformat(),"source":"5dollarfootballapi","match_count":len(rows),"analyzed_count":len(pool)}
     prompt=build_prompt(message,target,label,selections,len(rows))
     if history:prompt+=f"\nÖNCEKİ SOHBET BAĞLAMI:\n{main_module.compact_data(history,8000)}"
-    reply=await main_module.gemini_generate(prompt)
+    reply=await asyncio.wait_for(main_module.gemini_generate(prompt),timeout=10.0)
     return {"reply":reply,"date":target.isoformat(),"date_label":label,"match_count":len(rows),"analyzed_count":len(pool),"source":"5dollarfootballapi","agent":"FootballAgent / FootballAgentOrchestrator / FootballChatAgent"}
 
 def patch_main(m):
