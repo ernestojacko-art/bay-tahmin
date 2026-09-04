@@ -1,3 +1,4 @@
+import asyncio
 import os
 from datetime import datetime, timezone, timedelta
 
@@ -9,6 +10,7 @@ KEY = os.getenv("FIVE_DOLLAR_API_KEY")
 
 _MATCH_CACHE = {}
 _MATCH_CACHE_TTL_SECONDS = 15 * 60
+_MATCH_STALE_TTL_SECONDS = 6 * 60 * 60
 
 
 def _headers():
@@ -18,20 +20,44 @@ def _headers():
 
 
 async def _get(path: str, params: dict | None = None):
-    try:
-        async with httpx.AsyncClient(timeout=45.0) as client:
-            response = await client.get(f"{BASE}/{path.lstrip('/')}", headers=_headers(), params=params or {})
-    except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"5DollarFootballAPI bağlantı hatası: {exc}") from exc
-    if response.status_code != 200:
-        raise HTTPException(status_code=502, detail=f"5DollarFootballAPI isteği başarısız oldu ({response.status_code}): {response.text[:500]}")
-    try:
-        payload = response.json()
-    except ValueError as exc:
-        raise HTTPException(status_code=502, detail="5DollarFootballAPI geçerli JSON döndürmedi.") from exc
-    if payload.get("success") != 1:
-        raise HTTPException(status_code=502, detail=f"5DollarFootballAPI hatası: {payload}")
-    return payload
+    last_error = None
+    for attempt in range(4):
+        try:
+            async with httpx.AsyncClient(timeout=45.0) as client:
+                response = await client.get(f"{BASE}/{path.lstrip('/')}", headers=_headers(), params=params or {})
+        except httpx.HTTPError as exc:
+            last_error = exc
+            if attempt < 3:
+                await asyncio.sleep(1.5 * (attempt + 1))
+                continue
+            raise HTTPException(status_code=502, detail=f"5DollarFootballAPI bağlantı hatası: {exc}") from exc
+
+        if response.status_code == 429:
+            retry_after = response.headers.get("Retry-After")
+            try:
+                delay = min(max(float(retry_after), 1.0), 20.0) if retry_after else 3.0 * (attempt + 1)
+            except ValueError:
+                delay = 3.0 * (attempt + 1)
+            if attempt < 3:
+                await asyncio.sleep(delay)
+                continue
+            raise HTTPException(status_code=502, detail="5DollarFootballAPI geçici hız sınırına ulaştı; lütfen birkaç saniye sonra tekrar deneyin.")
+
+        if response.status_code in {500, 502, 503, 504} and attempt < 3:
+            await asyncio.sleep(1.5 * (attempt + 1))
+            continue
+
+        if response.status_code != 200:
+            raise HTTPException(status_code=502, detail=f"5DollarFootballAPI isteği başarısız oldu ({response.status_code}): {response.text[:500]}")
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise HTTPException(status_code=502, detail="5DollarFootballAPI geçerli JSON döndürmedi.") from exc
+        if payload.get("success") != 1:
+            raise HTTPException(status_code=502, detail=f"5DollarFootballAPI hatası: {payload}")
+        return payload
+
+    raise HTTPException(status_code=502, detail=f"5DollarFootballAPI bağlantısı başarısız: {last_error}")
 
 
 def _day_window(date: str | None):
@@ -73,8 +99,6 @@ def _fixture_row(f):
     }
 
 
-# 5Dollar's documented API uses compact keys such as goalline/cards/asian_half.
-# The canonical names below are the internal Bay Tahmin names.
 KEY_ALIASES = {
     "asian": "asian_handicap", "goalline": "goal_line", "corner": "corner_line", "cards": "card_line",
     "cards_asian": "card_asian", "asian_half": "asian_handicap_half", "goalline_half": "goal_line_half",
@@ -163,7 +187,14 @@ async def get_matches(date=None):
         return result
 
     start, end = _day_window(date)
-    payload = await _get("fixtures", {"start_time": start, "end_time": end, "status": "all", "lang": "en"})
+    try:
+        payload = await _get("fixtures", {"start_time": start, "end_time": end, "status": "all", "lang": "en"})
+    except HTTPException:
+        if cached and now_ts - cached[0] < _MATCH_STALE_TTL_SECONDS:
+            result = dict(cached[1])
+            result["cache"] = {"hit": True, "stale": True}
+            return result
+        raise
     rows = [_fixture_row(x) for x in (payload.get("data") or [])]
     result = {"data": rows, "source": "5dollarfootballapi", "cache": {"hit": False}, "live": {"count": sum(x["Status"] == "live" for x in rows), "source": "5dollarfootballapi"}}
     _MATCH_CACHE[cache_key] = (now_ts, result)
