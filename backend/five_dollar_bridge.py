@@ -7,6 +7,9 @@ from fastapi import HTTPException
 BASE = os.getenv("FIVE_DOLLAR_BASE_URL", "https://api.5dollarfootballapi.com/v1").rstrip("/")
 KEY = os.getenv("FIVE_DOLLAR_API_KEY")
 
+_MATCH_CACHE = {}
+_MATCH_CACHE_TTL_SECONDS = 15 * 60
+
 
 def _headers():
     if not KEY:
@@ -151,10 +154,20 @@ def _markets_from_odds(odds_payload, live=False):
 
 
 async def get_matches(date=None):
+    cache_key = str(date or datetime.now(timezone.utc).date())
+    now_ts = datetime.now(timezone.utc).timestamp()
+    cached = _MATCH_CACHE.get(cache_key)
+    if cached and now_ts - cached[0] < _MATCH_CACHE_TTL_SECONDS:
+        result = dict(cached[1])
+        result["cache"] = {"hit": True}
+        return result
+
     start, end = _day_window(date)
     payload = await _get("fixtures", {"start_time": start, "end_time": end, "status": "all", "lang": "en"})
     rows = [_fixture_row(x) for x in (payload.get("data") or [])]
-    return {"data": rows, "source": "5dollarfootballapi", "cache": {"hit": False}, "live": {"count": sum(x["Status"] == "live" for x in rows), "source": "5dollarfootballapi"}}
+    result = {"data": rows, "source": "5dollarfootballapi", "cache": {"hit": False}, "live": {"count": sum(x["Status"] == "live" for x in rows), "source": "5dollarfootballapi"}}
+    _MATCH_CACHE[cache_key] = (now_ts, result)
+    return result
 
 
 async def get_match_detail(match_id: int):
