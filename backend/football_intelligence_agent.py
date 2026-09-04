@@ -5,10 +5,10 @@ from datetime import date,datetime,timedelta,timezone
 from zoneinfo import ZoneInfo
 import five_dollar_bridge as five
 from football_intelligence_data import build_match_context
-TZ=ZoneInfo('Europe/Istanbul'); ENGINE='BAY TAHMİN FOOTBALL INTELLIGENCE ENGINE'; VERSION='0.3.0'
+TZ=ZoneInfo('Europe/Istanbul'); ENGINE='BAY TAHMİN FOOTBALL INTELLIGENCE ENGINE'; VERSION='0.3.1'
 def dates(s):
  t=str(s or '').lower();n=datetime.now(TZ).date();o=[]
- if 'yarın' in t or 'yarin' in t:o+=[n+timedelta(1)]
+ if 'yarın' in t or 'yarin' in t:o+=[n+timedelta(days=1)]
  if 'bugün' in t or 'bugun' in t:o+=[n]
  for w,k in [('cumartesi',5),('pazar',6)]:
   if w in t:o+=[n+timedelta((k-n.weekday())%7)]
@@ -35,7 +35,7 @@ def mat(x,y,n=8):
 def mprob(m):
  one=sum(m[h][a] for h in range(len(m)) for a in range(len(m)) if h>a);d=sum(m[i][i] for i in range(len(m)));two=1-one-d;ov=sum(m[h][a] for h in range(len(m)) for a in range(len(m)) if h+a>=3);bt=sum(m[h][a] for h in range(1,len(m)) for a in range(1,len(m)));return {'1':one,'X':d,'2':two,'over_2_5':ov,'under_2_5':1-ov,'btts_yes':bt,'btts_no':1-bt}
 def model(c):
- h,a,L=c['home'],c['away'],c['league'];hs,as_=h.get('strength',{}),a.get('strength',{});hf,af=h['recent_form'],a['recent_form'];hg=float(L.get('home_goal_avg') or 1.35);ag=float(L.get('away_goal_avg') or 1.10)
+ h,a,L=c['home'],c['away'],c['league'];hs,as_=h.get('strength',{}),a.get('strength',{});hf,af=h.get('recent_form',{}),a.get('recent_form',{});hg=float(L.get('home_goal_avg') or 1.35);ag=float(L.get('away_goal_avg') or 1.10)
  x=max(.2,min(3.8,hg*float(hs.get('attack_strength') or 1)*float(as_.get('defence_weakness') or 1)));y=max(.15,min(3.5,ag*float(as_.get('attack_strength') or 1)*float(hs.get('defence_weakness') or 1)))
  hp,ap=hf.get('points_per_game'),af.get('points_per_game')
  if hp is not None and ap is not None:
@@ -67,7 +67,7 @@ def market(ms):
   if z:return {k:round(v/z*100,2) for k,v in q.items()}
  return {}
 def window(d):
- s=datetime.combine(d,datetime.min.time(),tzinfo=TZ).astimezone(timezone.utc);return int(s.timestamp()),int((s+timedelta(1)).timestamp())
+ s=datetime.combine(d,datetime.min.time(),tzinfo=TZ).astimezone(timezone.utc);return int(s.timestamp()),int((s+timedelta(days=1)).timestamp())
 async def day(d):
  s,e=window(d);p=await five._get('fixtures',{'start_time':s,'end_time':e,'status':'all','lang':'en','per_page':50,'include':'odds,stats'});out=[]
  for f in p.get('data') or []:
@@ -98,13 +98,13 @@ def choose(cs,msg):
   if len(r)>=num(msg):break
  return r
 def pack(sel):
- return [{'match_id':c['match'].get('MatchID'),'match':c['match'].get('Teams'),'kickoff':c['match'].get('KickoffUTC'),'selection':k,'probability':v,'model':c['model'],'home_form':c['context']['home']['recent_form'],'away_form':c['context']['away']['recent_form'],'home_standing':c['context']['home']['standing'],'away_standing':c['context']['away']['standing'],'h2h':c['context']['h2h'],'market_cross_check':market(c['markets']),'data_quality':c['context']['data_quality']} for v,c,k in sel]
+ return [{'match_id':c['match'].get('MatchID'),'match':c['match'].get('Teams'),'kickoff':c['match'].get('KickoffUTC'),'selection':k,'probability':v,'model':c['model'],'home_form':c['context']['home']['recent_form'],'away_form':c['context']['away']['recent_form'],'home_standing':c['context']['home']['standing'],'away_standing':c['context']['away']['standing'],'h2h':c['context'].get('h2h',[]),'market_cross_check':market(c['markets']),'data_quality':c['context'].get('data_quality',{})} for v,c,k in sel]
 async def answer(main,msg,history=None):
- dates=ds(msg);rows=[r for g in await asyncio.gather(*(day(d) for d in dates)) for r in g]
+ ds=dates(msg);rows=[r for g in await asyncio.gather(*(day(d) for d in ds)) for r in g]
  if not rows:return {'reply':'İstenen tarihlerde doğrulanmış gerçek futbol maçı bulunamadı.','engine':ENGINE,'engine_version':VERSION}
  cs=await asyncio.gather(*(cand(r) for r in rows));sel=choose(cs,msg);data=pack(sel)
  prompt=f'''Sen {ENGINE} sürüm {VERSION} profesyonel futbol istihbarat motorusun. Kullanıcı: {msg}\nDOSSIER:{json.dumps(data,ensure_ascii=False)}\nTahmin ana kaynağı futbol modelidir; piyasa yalnızca çapraz kontroldür. Model Elo, recency-weighted form, takım hücum/savunma gücü, Poisson/Dixon-Coles, Monte Carlo ve ortak İY/MS dağılımını kullanır. Expected goals sonuçlardan türetilmiş proxy'dir. İY/MS doğrudan market yoksa model projeksiyonudur. Verilmeyen bilgiyi uydurma. En güçlü futbol kanıtlarını açıkla, belirsizliği belirt, kupon oluşturma. Türkçe yanıt ver.'''
- return {'reply':await main.gemini_generate(prompt),'engine':ENGINE,'engine_version':VERSION,'dates':[d.isoformat() for d in dates],'match_count':len(rows),'analyzed_count':len(cs),'source':'5DollarFootballAPI + statistical football model'}
+ return {'reply':await main.gemini_generate(prompt),'engine':ENGINE,'engine_version':VERSION,'dates':[d.isoformat() for d in ds],'match_count':len(rows),'analyzed_count':len(cs),'source':'5DollarFootballAPI + statistical football model'}
 async def match_answer(main,mid,msg,history=None):
  p=await five._get(f'fixtures/{int(mid)}',{'lang':'en','include':'events,stats'});f=p.get('data') or {}
  if not f:return {'reply':'Maç bulunamadı.','engine':ENGINE}
