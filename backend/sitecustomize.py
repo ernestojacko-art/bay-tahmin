@@ -36,11 +36,14 @@ class _MainPatch(importlib.abc.MetaPathFinder, importlib.abc.Loader):
             source = fh.read()
         exec(compile(source, module.__spec__.origin, "exec"), module.__dict__)
 
-        # 5DollarFootballAPI is the temporary provider while API-Football is suspended.
-        # It takes precedence when its secret is configured in Render.
+        # 5DollarFootballAPI is the active provider for Bay Tahmin.
+        # The date-aware Football Agent adapter is applied only after the provider bridge,
+        # so all Agent operations use the same 5DollarFootballAPI data source.
         if os.getenv("FIVE_DOLLAR_API_KEY"):
             from five_dollar_bridge import patch_main
             patch_main(module)
+            from agent_adapter import patch_main as patch_agent
+            patch_agent(module)
         elif os.getenv("API_FOOTBALL_KEY") or os.getenv("APIFOOTBALL_KEY"):
             from api_football_bridge import patch_main
             patch_main(module)
