@@ -12,9 +12,9 @@ KEY = os.getenv("FIVE_DOLLAR_API_KEY")
 _MATCH_CACHE = {}
 _MATCH_CACHE_TTL_SECONDS = 15 * 60
 _MATCH_STALE_TTL_SECONDS = 6 * 60 * 60
+_FIXTURE_DETAIL_CACHE = {}
+_FIXTURE_DETAIL_TTL_SECONDS = 5 * 60
 _REQUEST_LOCK = asyncio.Lock()
-_LAST_REQUEST_AT = 0.0
-_REQUEST_SPACING_SECONDS = 3.2
 
 
 def _headers():
@@ -24,43 +24,36 @@ def _headers():
 
 
 async def _paced_request(url: str, params: dict):
-    global _LAST_REQUEST_AT
-    async with _REQUEST_LOCK:
-        now = asyncio.get_running_loop().time()
-        wait = _REQUEST_SPACING_SECONDS - (now - _LAST_REQUEST_AT)
-        if wait > 0:
-            await asyncio.sleep(wait)
-        async with httpx.AsyncClient(timeout=45.0) as client:
-            response = await client.get(url, headers=_headers(), params=params)
-        _LAST_REQUEST_AT = asyncio.get_running_loop().time()
-        return response
+    # 5DollarFootballAPI explicitly allows short parallel bursts. The old
+    # 3.2s global spacing made a 19-match analysis take about a minute.
+    async with httpx.AsyncClient(timeout=httpx.Timeout(8.0, connect=3.0)) as client:
+        return await client.get(url, headers=_headers(), params=params)
 
 
-async def _get(path: str, params: dict | None = None):
+async def _get(path: str, params: dict | None = None, *, retries: int = 0):
     last_error = None
-    for attempt in range(4):
+    cache_key = (path, tuple(sorted((params or {}).items())))
+    if path.startswith("fixtures/") and path.count("/") == 1:
+        cached = _FIXTURE_DETAIL_CACHE.get(cache_key)
+        if cached and datetime.now(timezone.utc).timestamp() - cached[0] < _FIXTURE_DETAIL_TTL_SECONDS:
+            return cached[1]
+
+    for attempt in range(retries + 1):
         try:
             response = await _paced_request(f"{BASE}/{path.lstrip('/')}", params or {})
         except httpx.HTTPError as exc:
             last_error = exc
-            if attempt < 3:
-                await asyncio.sleep(1.5 * (attempt + 1))
+            if attempt < retries:
+                await asyncio.sleep(0.5)
                 continue
             raise HTTPException(status_code=502, detail=f"5DollarFootballAPI bağlantı hatası: {exc}") from exc
 
         if response.status_code == 429:
             retry_after = response.headers.get("Retry-After")
-            try:
-                delay = max(float(retry_after), 1.0) if retry_after else 60.0
-            except ValueError:
-                delay = 60.0
-            if attempt < 3 and delay <= 75:
-                await asyncio.sleep(delay)
-                continue
-            raise HTTPException(status_code=503, detail=f"5DollarFootballAPI hız sınırı aktif. Retry-After: {int(delay)} saniye.")
+            raise HTTPException(status_code=503, detail=f"5DollarFootballAPI hız sınırı aktif. Retry-After: {retry_after or 'belirsiz'} saniye.")
 
-        if response.status_code in {500, 502, 503, 504} and attempt < 3:
-            await asyncio.sleep(2.0 * (attempt + 1))
+        if response.status_code in {500, 502, 503, 504} and attempt < retries:
+            await asyncio.sleep(0.5)
             continue
 
         if response.status_code != 200:
@@ -71,6 +64,8 @@ async def _get(path: str, params: dict | None = None):
             raise HTTPException(status_code=502, detail="5DollarFootballAPI geçerli JSON döndürmedi.") from exc
         if payload.get("success") != 1:
             raise HTTPException(status_code=502, detail=f"5DollarFootballAPI hatası: {payload}")
+        if path.startswith("fixtures/") and path.count("/") == 1:
+            _FIXTURE_DETAIL_CACHE[cache_key] = (datetime.now(timezone.utc).timestamp(), payload)
         return payload
 
     raise HTTPException(status_code=502, detail=f"5DollarFootballAPI bağlantısı başarısız: {last_error}")
@@ -134,65 +129,47 @@ MARKET_NAMES = {
 
 
 def _stage(entry, live=False):
-    if not isinstance(entry, dict):
-        return None
-    if live and isinstance(entry.get("inplay"), dict):
-        return entry["inplay"]
+    if not isinstance(entry, dict): return None
+    if live and isinstance(entry.get("inplay"), dict): return entry["inplay"]
     for key in ("closing", "current", "opening"):
         value = entry.get(key)
-        if isinstance(value, dict):
-            return value
+        if isinstance(value, dict): return value
     return None
 
 
 def _add_market(markets, name, market_type, values):
     clean = []
     for value, odd in values:
-        if value in (None, ""):
-            continue
-        try:
-            odd = float(odd)
-        except (TypeError, ValueError):
-            continue
-        if odd > 0:
-            clean.append({"value": str(value), "odd": odd})
-    if clean:
-        markets.append({"gameName": name, "type": str(market_type), "odds": clean})
+        if value in (None, ""): continue
+        try: odd = float(odd)
+        except (TypeError, ValueError): continue
+        if odd > 0: clean.append({"value": str(value), "odd": odd})
+    if clean: markets.append({"gameName": name, "type": str(market_type), "odds": clean})
 
 
 def _markets_from_odds(odds_payload, live=False):
     markets = []
     data = odds_payload.get("data") or {}
     bookmaker_entries = []
-    if isinstance(data.get("odds"), dict):
-        bookmaker_entries.append(("Bet 365", data["odds"]))
+    if isinstance(data.get("odds"), dict): bookmaker_entries.append(("Bet 365", data["odds"]))
     if isinstance(data.get("bookmakers"), list):
         for bookmaker in data["bookmakers"]:
-            if isinstance(bookmaker, dict):
-                bookmaker_entries.append((bookmaker.get("name") or "Bet 365", bookmaker.get("odds") or {}))
-
+            if isinstance(bookmaker, dict): bookmaker_entries.append((bookmaker.get("name") or "Bet 365", bookmaker.get("odds") or {}))
     for book_name, odds in bookmaker_entries:
         for raw_key, entry in odds.items():
             key = KEY_ALIASES.get(raw_key, raw_key)
             stage = _stage(entry, live=live)
-            if not stage:
-                continue
+            if not stage: continue
             display = MARKET_NAMES.get(key)
-            if not display:
-                continue
+            if not display: continue
             name = f"{display} ({book_name})"
-            if key == "1x2":
-                _add_market(markets, name, "1x2", [("1", stage.get("home")), ("X", stage.get("draw")), ("2", stage.get("away"))])
-            elif key == "1x2_half":
-                _add_market(markets, name, "1x2_half", [("1", stage.get("home")), ("X", stage.get("draw")), ("2", stage.get("away"))])
+            if key == "1x2": _add_market(markets, name, "1x2", [("1", stage.get("home")), ("X", stage.get("draw")), ("2", stage.get("away"))])
+            elif key == "1x2_half": _add_market(markets, name, "1x2_half", [("1", stage.get("home")), ("X", stage.get("draw")), ("2", stage.get("away"))])
             elif key in {"goal_line", "goal_line_half", "corner_line", "corner_line_half", "card_line"}:
-                line = stage.get("line")
-                _add_market(markets, name, key, [(f"Üst {line}", stage.get("over")), (f"Alt {line}", stage.get("under"))])
-            elif key == "btts":
-                _add_market(markets, name, key, [("Var", stage.get("yes")), ("Yok", stage.get("no"))])
+                line = stage.get("line"); _add_market(markets, name, key, [(f"Üst {line}", stage.get("over")), (f"Alt {line}", stage.get("under"))])
+            elif key == "btts": _add_market(markets, name, key, [("Var", stage.get("yes")), ("Yok", stage.get("no"))])
             elif key in {"asian_handicap", "asian_handicap_half", "corner_asian", "card_asian"}:
-                line = stage.get("line")
-                _add_market(markets, name, key, [(f"Ev {line}", stage.get("home")), (f"Dep {line}", stage.get("away"))])
+                line = stage.get("line"); _add_market(markets, name, key, [(f"Ev {line}", stage.get("home")), (f"Dep {line}", stage.get("away"))])
     return markets
 
 
@@ -201,18 +178,13 @@ async def get_matches(date=None):
     now_ts = datetime.now(timezone.utc).timestamp()
     cached = _MATCH_CACHE.get(cache_key)
     if cached and now_ts - cached[0] < _MATCH_CACHE_TTL_SECONDS:
-        result = dict(cached[1])
-        result["cache"] = {"hit": True}
-        return result
-
+        result = dict(cached[1]); result["cache"] = {"hit": True}; return result
     start, end = _day_window(date)
     try:
         payload = await _get("fixtures", {"start_time": start, "end_time": end, "status": "all", "lang": "en", "per_page": 100})
     except HTTPException:
         if cached and now_ts - cached[0] < _MATCH_STALE_TTL_SECONDS:
-            result = dict(cached[1])
-            result["cache"] = {"hit": True, "stale": True}
-            return result
+            result = dict(cached[1]); result["cache"] = {"hit": True, "stale": True}; return result
         raise
     rows = [_fixture_row(x) for x in (payload.get("data") or [])]
     result = {"data": rows, "source": "5dollarfootballapi", "cache": {"hit": False}, "live": {"count": sum(x["Status"] == "live" for x in rows), "source": "5dollarfootballapi"}}
@@ -221,14 +193,13 @@ async def get_matches(date=None):
 
 
 async def get_match_detail(match_id: int):
+    # The fixture endpoint already contains Bet365 odds on every plan.
+    # Avoid the second /odds request entirely.
     fixture_payload = await _get(f"fixtures/{match_id}", {"lang": "en"})
     fixture = fixture_payload.get("data") or {}
-    if not fixture:
-        raise HTTPException(status_code=404, detail="Maç bulunamadı.")
-    row = _fixture_row(fixture)
-    live = row.get("Status") == "live"
-    odds_payload = await _get(f"fixtures/{match_id}/odds", {"bookmakers": "bet365", "lang": "en"})
-    markets = _markets_from_odds(odds_payload, live=live)
+    if not fixture: raise HTTPException(status_code=404, detail="Maç bulunamadı.")
+    row = _fixture_row(fixture); live = row.get("Status") == "live"
+    markets = _markets_from_odds({"data": {"odds": fixture.get("odds") or {}}}, live=live)
     return {
         "fixture": fixture,
         "match": {"id": row["id"], "kickoff": row["KickoffUTC"], "status": row["Status"],
@@ -241,21 +212,14 @@ async def get_match_detail(match_id: int):
 
 
 def patch_main(m):
-    if not KEY:
-        return
-    m.get_matches = get_matches
-    m.get_match_detail = get_match_detail
-    m.get_match_detail_alias = get_match_detail
-    m.nosy_get = None
+    if not KEY: return
+    m.get_matches = get_matches; m.get_match_detail = get_match_detail; m.get_match_detail_alias = get_match_detail; m.nosy_get = None
 
     async def inspect_match(row):
         key = str(row.get("MatchID") or row.get("matchID") or row.get("id") or "")
-        if not key:
-            return None
-        try:
-            detail = await get_match_detail(int(key))
-        except Exception:
-            return None
+        if not key: return None
+        try: detail = await get_match_detail(int(key))
+        except Exception: return None
         markets = detail.get("markets", [])
         iyms = next((x for x in markets if "iy/ms" in x.get("gameName", "").lower() or "ilk yarı/maç sonucu" in x.get("gameName", "").lower()), None)
         return {"match": m.slim_match(row), "markets": m.market_payload(markets), "iyms_market_open": bool(iyms), "iyms": m.parse_iyms_market(iyms) if iyms else None}
