@@ -128,11 +128,21 @@ def _add_market(markets, name, market_type, values):
 
 
 def _markets_from_odds(odds_payload, live=False):
+    """Normalize the documented single-bookmaker response and tolerate wrapped responses."""
     markets = []
     data = odds_payload.get("data") or {}
-    for bookmaker in data.get("bookmakers", []):
-        book_name = bookmaker.get("name") or "Bet 365"
-        odds = bookmaker.get("odds") or {}
+
+    # Current 5Dollar docs show /fixtures/{id}/odds returning data.odds for Bet365.
+    bookmaker_entries = []
+    if isinstance(data.get("odds"), dict):
+        bookmaker_entries.append(("Bet 365", data["odds"]))
+
+    # Also tolerate a wrapped {bookmakers:[{name, odds}, ...]} response.
+    for bookmaker in data.get("bookmakers", []) if isinstance(data.get("bookmakers"), list) else []:
+        if isinstance(bookmaker, dict):
+            bookmaker_entries.append((bookmaker.get("name") or "Bet 365", bookmaker.get("odds") or {}))
+
+    for book_name, odds in bookmaker_entries:
         for key, entry in odds.items():
             stage = _stage(entry, live=live)
             if not stage:
@@ -143,10 +153,7 @@ def _markets_from_odds(odds_payload, live=False):
             name = f"{display} ({book_name})"
             if key == "1x2":
                 _add_market(markets, name, "1x2", [("1", stage.get("home")), ("X", stage.get("draw")), ("2", stage.get("away"))])
-            elif key in {"goal_line", "goal_line_half"}:
-                line = stage.get("line")
-                _add_market(markets, name, key, [(f"Üst {line}", stage.get("over")), (f"Alt {line}", stage.get("under"))])
-            elif key in {"corner_line", "corner_line_half", "card_line"}:
+            elif key in {"goal_line", "goal_line_half", "corner_line", "corner_line_half", "card_line"}:
                 line = stage.get("line")
                 _add_market(markets, name, key, [(f"Üst {line}", stage.get("over")), (f"Alt {line}", stage.get("under"))])
             elif key == "btts":
