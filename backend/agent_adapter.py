@@ -34,37 +34,21 @@ def local_day_window(target):
 
 async def _fixture_rows(target):
     start,end=local_day_window(target)
-    payload=await five._get("fixtures",{"start_time":start,"end_time":end,"status":"all","lang":"en","per_page":100})
+    # Pro batch odds: one request gives the fixture list and Bet365 odds.
+    payload=await five._get("fixtures",{"start_time":start,"end_time":end,"status":"all","lang":"en","per_page":50,"include":"odds"})
     out=[]; seen=set()
     for fixture in payload.get("data") or []:
         row=five._fixture_row(fixture); mid=str(row.get("MatchID") or ""); kickoff=row.get("KickoffUTC") or row.get("Date") or ""
         try: local=datetime.fromisoformat(str(kickoff).replace("Z","+00:00")).astimezone(ISTANBUL).date()
         except ValueError: continue
         if local!=target or not mid or mid in seen: continue
-        seen.add(mid); out.append((row,fixture))
+        seen.add(mid)
+        row["_markets"]=five._markets_from_odds({"data":{"odds":fixture.get("odds") or {}}},live=row.get("Status")=="live")
+        out.append(row)
     return out
 
 async def get_matches_for_local_date(target):
-    pairs=await _fixture_rows(target)
-    if not pairs: return []
-
-    # Free/Community plans cannot expand odds on the list endpoint, while the
-    # single-fixture endpoint includes the same Bet365 odds. Fetch those details
-    # concurrently and cache them. This removes the old 3.2s/request bottleneck.
-    sem=asyncio.Semaphore(10)
-    rows=[p[0] for p in pairs[:19]]  # keep the 20 req/min ceiling: 1 list + 19 details
-
-    async def load(row):
-        async with sem:
-            try:
-                detail=await five._get(f"fixtures/{row['MatchID']}",{"lang":"en"})
-                fixture=detail.get("data") or {}
-                row["_markets"]=five._markets_from_odds({"data":{"odds":fixture.get("odds") or {}}},live=row.get("Status")=="live")
-            except Exception:
-                row["_markets"]=[]
-            return row
-
-    return await asyncio.gather(*(load(r) for r in rows))
+    return await _fixture_rows(target)
 
 def _norm(v): return re.sub(r"\s+"," ",str(v or "").strip().lower())
 def requested_count(m):
@@ -82,6 +66,8 @@ def market_score(market,message):
     name=_norm(market.get("gameName"))
     if wants_iyms(message) and "ilk yarı maç sonucu" not in name and "iy/ms" not in name:return None
     if wants_surprise(message):
+        # Surprise = a non-standard market outcome with lower implied probability.
+        # Do not invent selections: only rank odds actually supplied by the API.
         a=[x for x in r if _norm(x[0]) not in {"1","x","2"}]; return a[0][2]*100 if a else None
     bonus=8 if "maç sonucu" in name or "1x2" in name else 6 if "karşılıklı gol" in name or "kg" in name else 5 if "alt/üst gol" in name else 0
     return r[0][2]*100+bonus
