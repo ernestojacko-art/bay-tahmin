@@ -23,8 +23,6 @@ def _headers():
 
 
 async def _paced_request(url: str, params: dict):
-    # Pro supports batch odds on fixture lists. Keep requests lean and avoid
-    # the old artificial 3.2s spacing that caused long chat latency.
     async with httpx.AsyncClient(timeout=httpx.Timeout(8.0, connect=3.0)) as client:
         return await client.get(url, headers=_headers(), params=params)
 
@@ -147,10 +145,33 @@ def _markets_from_odds(odds_payload, live=False):
     markets = []
     data = odds_payload.get("data") or {}
     bookmaker_entries = []
-    if isinstance(data.get("odds"), dict): bookmaker_entries.append(("Bet 365", data["odds"]))
+    raw_odds = data.get("odds")
+
+    # Fixture detail commonly returns data.odds as a single Bet365 dict.
+    if isinstance(raw_odds, dict):
+        bookmaker_entries.append(("Bet 365", raw_odds))
+    # Fixture-list include=odds may return data.odds as a bookmaker list.
+    elif isinstance(raw_odds, list):
+        for bookmaker in raw_odds:
+            if not isinstance(bookmaker, dict): continue
+            odds = bookmaker.get("odds") or {}
+            if isinstance(odds, dict):
+                bookmaker_entries.append((bookmaker.get("name") or "Bet 365", odds))
+
     if isinstance(data.get("bookmakers"), list):
         for bookmaker in data["bookmakers"]:
-            if isinstance(bookmaker, dict): bookmaker_entries.append((bookmaker.get("name") or "Bet 365", bookmaker.get("odds") or {}))
+            if isinstance(bookmaker, dict):
+                odds = bookmaker.get("odds") or {}
+                if isinstance(odds, dict):
+                    bookmaker_entries.append((bookmaker.get("name") or "Bet 365", odds))
+
+    # Some list responses put the bookmaker object directly under fixture.odds.
+    if not bookmaker_entries and isinstance(odds_payload.get("odds"), list):
+        for bookmaker in odds_payload["odds"]:
+            if isinstance(bookmaker, dict) and isinstance(bookmaker.get("odds"), dict):
+                bookmaker_entries.append((bookmaker.get("name") or "Bet 365", bookmaker["odds"]))
+
+    seen_markets = set()
     for book_name, odds in bookmaker_entries:
         for raw_key, entry in odds.items():
             key = KEY_ALIASES.get(raw_key, raw_key)
@@ -159,6 +180,9 @@ def _markets_from_odds(odds_payload, live=False):
             display = MARKET_NAMES.get(key)
             if not display: continue
             name = f"{display} ({book_name})"
+            market_key = (book_name, key, str(stage.get("line")))
+            if market_key in seen_markets: continue
+            seen_markets.add(market_key)
             if key == "1x2": _add_market(markets, name, "1x2", [("1", stage.get("home")), ("X", stage.get("draw")), ("2", stage.get("away"))])
             elif key == "1x2_half": _add_market(markets, name, "1x2_half", [("1", stage.get("home")), ("X", stage.get("draw")), ("2", stage.get("away"))])
             elif key in {"goal_line", "goal_line_half", "corner_line", "corner_line_half", "card_line"}:
@@ -177,8 +201,6 @@ async def get_matches(date=None):
         result = dict(cached[1]); result["cache"] = {"hit": True}; return result
     start, end = _day_window(date)
     try:
-        # Pro-only batch odds: one request returns the day's fixture rows and
-        # Bet365 markets together. This is the main latency optimization.
         payload = await _get("fixtures", {"start_time": start, "end_time": end, "status": "all", "lang": "en", "per_page": 50, "include": "odds"})
     except HTTPException:
         if cached and now_ts - cached[0] < _MATCH_STALE_TTL_SECONDS:
