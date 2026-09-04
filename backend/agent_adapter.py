@@ -5,6 +5,10 @@ from zoneinfo import ZoneInfo
 from fastapi import HTTPException, Request
 import five_dollar_bridge as five
 from accuracy import save_prediction
+try:
+    from iyms_fallback import build as _build_iyms_fallback
+except Exception:
+    _build_iyms_fallback = None
 
 ISTANBUL = ZoneInfo("Europe/Istanbul")
 MONTHS = {"ocak":1,"şubat":2,"subat":2,"mart":3,"nisan":4,"mayıs":5,"mayis":5,"haziran":6,"temmuz":7,"ağustos":8,"agustos":8,"eylül":9,"eylul":9,"ekim":10,"kasım":11,"kasim":11,"aralık":12,"aralik":12}
@@ -25,8 +29,8 @@ def resolve_requested_dates(message):
         d,mo=int(m.group(1)),int(m.group(2)); y=int(m.group(3)) if m.group(3) else today.year; y=y+2000 if y<100 else y
         try: dates.append(date(y,mo,d))
         except ValueError: pass
-    for n,mo in MONTHS.items():
-        m=re.search(rf"\b(\d{{1,2}})\s+{re.escape(n)}(?:\s+(\d{{4}}))?\b",text)
+    for name,mo in MONTHS.items():
+        m=re.search(rf"\b(\d{{1,2}})\s+{re.escape(name)}(?:\s+(\d{{4}}))?\b",text)
         if m:
             try: dates.append(date(int(m.group(2)) if m.group(2) else today.year,mo,int(m.group(1))))
             except ValueError: pass
@@ -65,6 +69,11 @@ def find_market(item, market_type):
     return None
 
 def build_iyms_candidates(item, surprise=False):
+    if _build_iyms_fallback is not None:
+        try:
+            return _build_iyms_fallback(item, market_probability, find_market, surprise)
+        except Exception:
+            pass
     half=find_market(item,"1x2_half"); full=find_market(item,"1x2")
     if not half or not full: return []
     hp=market_probability(half.get("odds",[])); fp=market_probability(full.get("odds",[]))
@@ -87,7 +96,7 @@ def choose_best(pool,message,count):
         match=item["match"]
         if iyms:
             for c in build_iyms_candidates(item,surprise=surprise):
-                candidates.append({"match_id":str(match["MatchID"]),"match":match.get("Teams") or "Maç","home_team":match.get("Team1") or "","away_team":match.get("Team2") or "","competition":match.get("League") or "","kickoff":match.get("KickoffUTC") or match.get("Date"),"market":"İY / MS Agent Projeksiyonu","market_type":"iyms_projection","selection":c["selection"],"odd":c["odd"],"market_probability":round(c["prob_norm"]*100,2),"score":round(c["prob_norm"]*100,2),"basis":"Gerçek 5Dollar Bet365 İlk Yarı 1X2 + Maç Sonucu 1X2"})
+                candidates.append({"match_id":str(match["MatchID"]),"match":match.get("Teams") or "Maç","home_team":match.get("Team1") or "","away_team":match.get("Team2") or "","competition":match.get("League") or "","kickoff":match.get("KickoffUTC") or match.get("Date"),"market":"İY / MS Agent Projeksiyonu","market_type":"iyms_projection","selection":c["selection"],"odd":c["odd"],"market_probability":round(c["prob_norm"]*100,2),"score":round(c["prob_norm"]*100,2),"basis":c.get("basis") or "Gerçek 5Dollar Bet365 İlk Yarı 1X2 + Maç Sonucu 1X2"})
             continue
         for market in item.get("markets",[]):
             r=rank_market(market)
@@ -128,7 +137,7 @@ class FootballChatAgent:
         selections=choose_best(pool,message,requested_count(message))
         if not selections:
             if wants_iyms(message):
-                return {"reply":"İstenen tarihlerde İY/MS projeksiyonu için gerekli gerçek İlk Yarı 1X2 ve Maç Sonucu 1X2 market verisi bulunan yeterli maç bulunamadı.","dates":[d.isoformat() for d in dates],"match_count":len(pool),"analyzed_count":len(pool),"source":"5dollarfootballapi"}
+                return {"reply":"İstenen tarihlerde İY/MS projeksiyonu için gerekli gerçek Maç Sonucu 1X2 verisi bulunan yeterli maç bulunamadı.","dates":[d.isoformat() for d in dates],"match_count":len(pool),"analyzed_count":len(pool),"source":"5dollarfootballapi"}
             return {"reply":"İstenen tarihlerde isteğini karşılayan doğrulanmış açık market bulunamadı.","dates":[d.isoformat() for d in dates],"match_count":len(pool),"analyzed_count":len(pool),"source":"5dollarfootballapi"}
         await persist_selections(selections); prompt=build_prompt(message,dates,selections,len(pool))
         if history: prompt+=f"\nÖNCEKİ SOHBET BAĞLAMI:\n{self.main.compact_data(history,8000)}"
