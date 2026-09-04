@@ -40,6 +40,11 @@ class _MainPatch(importlib.abc.MetaPathFinder, importlib.abc.Loader):
                 agent_adapter.build_iyms_candidates = lambda item, surprise=False: build_iyms(item, agent_adapter.market_probability, agent_adapter.find_market, surprise)
             except Exception:
                 pass
+            # Final runtime layer: the football-first intelligence engine owns
+            # both general and match chat. It deliberately sits after the old
+            # compatibility patches so the frontend keeps the same endpoints.
+            from football_intelligence_agent import patch_main as patch_intelligence
+            patch_intelligence(module)
             from admin_api import patch_main as patch_admin
             patch_admin(module)
         elif os.getenv("API_FOOTBALL_KEY") or os.getenv("APIFOOTBALL_KEY"):
