@@ -32,6 +32,12 @@ class _MainPatch(importlib.abc.MetaPathFinder, importlib.abc.Loader):
         if os.getenv("FIVE_DOLLAR_API_KEY"):
             from five_dollar_bridge import patch_main
             patch_main(module)
+            # Fixture catalog: complete 7-day pagination + real Pro league list.
+            try:
+                from fixture_catalog import patch_main as patch_catalog
+                patch_catalog(module)
+            except Exception:
+                pass
             import agent_adapter
             from agent_adapter import patch_main as patch_agent
             patch_agent(module)
@@ -40,9 +46,6 @@ class _MainPatch(importlib.abc.MetaPathFinder, importlib.abc.Loader):
                 agent_adapter.build_iyms_candidates = lambda item, surprise=False: build_iyms(item, agent_adapter.market_probability, agent_adapter.find_market, surprise)
             except Exception:
                 pass
-            # Final runtime layer: the football-first intelligence engine owns
-            # both general and match chat. It deliberately sits after the old
-            # compatibility patches so the frontend keeps the same endpoints.
             from football_intelligence_agent import patch_main as patch_intelligence
             patch_intelligence(module)
             from admin_api import patch_main as patch_admin
