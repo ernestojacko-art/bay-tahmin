@@ -47,7 +47,7 @@ async def _fixture_rows(target):
 async def get_matches_for_local_date(target):
     pairs=await _fixture_rows(target)
     try:
-        payload=await five._get("fixtures",{**dict(),"start_time":local_day_window(target)[0],"end_time":local_day_window(target)[1],"status":"all","lang":"en","include":"odds","per_page":50})
+        payload=await five._get("fixtures",{"start_time":local_day_window(target)[0],"end_time":local_day_window(target)[1],"status":"all","lang":"en","include":"odds","per_page":50})
         by_id={str(x.get("id")):x for x in payload.get("data") or []}
         out=[]
         for row,fixture in pairs:
@@ -58,8 +58,6 @@ async def get_matches_for_local_date(target):
             out.append(row)
         return out
     except HTTPException as exc:
-        # Free/Community do not support include=odds on list endpoints. Fall back to
-        # the documented per-fixture odds endpoint, with a small concurrency cap.
         if exc.status_code != 502 or "insufficient_plan" not in str(exc.detail).lower(): raise
         sem=asyncio.Semaphore(4)
         async def load(row):
@@ -67,9 +65,8 @@ async def get_matches_for_local_date(target):
                 try:
                     odds=await five._get(f"fixtures/{row['MatchID']}/odds",{"bookmakers":"bet365","lang":"en"})
                     row["_markets"]=five._markets_from_odds(odds,live=row.get("Status")=="live")
-                except Exception: row["_markets"]=[]
+                except Exception: row["_markets"] = []
                 return row
-        # Respect the 20/min hourly-plan burst ceiling by limiting the fallback pool.
         rows=[p[0] for p in pairs[:19]]
         return await asyncio.gather(*(load(r) for r in rows))
 
@@ -139,6 +136,7 @@ async def general_chat(request,main_module):
 def patch_main(m):
     from fastapi.routing import APIRoute
     m.app.router.routes=[r for r in m.app.router.routes if not(isinstance(r,APIRoute) and r.path=="/chat" and "POST" in(r.methods or set()))]
-    async def route(request):return await general_chat(request,m)
+    async def route(request: Request):
+        return await general_chat(request,m)
     m.app.add_api_route("/chat",route,methods=["POST"])
     m.get_matches=five.get_matches;m.get_match_detail=five.get_match_detail;m.get_match_detail_alias=five.get_match_detail
