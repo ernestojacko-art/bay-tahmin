@@ -34,6 +34,12 @@ class _MainPatch(importlib.abc.MetaPathFinder, importlib.abc.Loader):
             patch_main(module)
             from agent_adapter import patch_main as patch_agent
             patch_agent(module)
+            try:
+                from iyms_fallback import build as build_iyms
+                module.agent_adapter_build_iyms = build_iyms
+                original = module.agent_adapter_build_iyms
+            except Exception:
+                pass
             from admin_api import patch_main as patch_admin
             patch_admin(module)
         elif os.getenv("API_FOOTBALL_KEY") or os.getenv("APIFOOTBALL_KEY"):
