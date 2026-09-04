@@ -14,7 +14,6 @@ _MATCH_CACHE_TTL_SECONDS = 15 * 60
 _MATCH_STALE_TTL_SECONDS = 6 * 60 * 60
 _FIXTURE_DETAIL_CACHE = {}
 _FIXTURE_DETAIL_TTL_SECONDS = 5 * 60
-_REQUEST_LOCK = asyncio.Lock()
 
 
 def _headers():
@@ -24,8 +23,8 @@ def _headers():
 
 
 async def _paced_request(url: str, params: dict):
-    # 5DollarFootballAPI explicitly allows short parallel bursts. The old
-    # 3.2s global spacing made a 19-match analysis take about a minute.
+    # Pro supports batch odds on fixture lists. Keep requests lean and avoid
+    # the old artificial 3.2s spacing that caused long chat latency.
     async with httpx.AsyncClient(timeout=httpx.Timeout(8.0, connect=3.0)) as client:
         return await client.get(url, headers=_headers(), params=params)
 
@@ -85,12 +84,9 @@ def _day_window(date: str | None):
 
 def _status(value):
     value = str(value or "").lower()
-    if value in {"live", "inplay", "in_play"}:
-        return "live"
-    if value in {"finished", "ft", "aet", "pen"}:
-        return "finished"
-    if value in {"postponed", "canceled", "cancelled", "abandoned"}:
-        return "canceled"
+    if value in {"live", "inplay", "in_play"}: return "live"
+    if value in {"finished", "ft", "aet", "pen"}: return "finished"
+    if value in {"postponed", "canceled", "cancelled", "abandoned"}: return "canceled"
     return "scheduled"
 
 
@@ -181,7 +177,9 @@ async def get_matches(date=None):
         result = dict(cached[1]); result["cache"] = {"hit": True}; return result
     start, end = _day_window(date)
     try:
-        payload = await _get("fixtures", {"start_time": start, "end_time": end, "status": "all", "lang": "en", "per_page": 100})
+        # Pro-only batch odds: one request returns the day's fixture rows and
+        # Bet365 markets together. This is the main latency optimization.
+        payload = await _get("fixtures", {"start_time": start, "end_time": end, "status": "all", "lang": "en", "per_page": 50, "include": "odds"})
     except HTTPException:
         if cached and now_ts - cached[0] < _MATCH_STALE_TTL_SECONDS:
             result = dict(cached[1]); result["cache"] = {"hit": True, "stale": True}; return result
@@ -193,8 +191,6 @@ async def get_matches(date=None):
 
 
 async def get_match_detail(match_id: int):
-    # The fixture endpoint already contains Bet365 odds on every plan.
-    # Avoid the second /odds request entirely.
     fixture_payload = await _get(f"fixtures/{match_id}", {"lang": "en"})
     fixture = fixture_payload.get("data") or {}
     if not fixture: raise HTTPException(status_code=404, detail="Maç bulunamadı.")
