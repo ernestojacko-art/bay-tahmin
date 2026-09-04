@@ -32,12 +32,12 @@ class _MainPatch(importlib.abc.MetaPathFinder, importlib.abc.Loader):
         if os.getenv("FIVE_DOLLAR_API_KEY"):
             from five_dollar_bridge import patch_main
             patch_main(module)
+            import agent_adapter
             from agent_adapter import patch_main as patch_agent
             patch_agent(module)
             try:
                 from iyms_fallback import build as build_iyms
-                module.agent_adapter_build_iyms = build_iyms
-                original = module.agent_adapter_build_iyms
+                agent_adapter.build_iyms_candidates = lambda item, surprise=False: build_iyms(item, agent_adapter.market_probability, agent_adapter.find_market, surprise)
             except Exception:
                 pass
             from admin_api import patch_main as patch_admin
