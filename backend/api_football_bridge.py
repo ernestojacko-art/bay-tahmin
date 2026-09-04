@@ -194,7 +194,20 @@ def _cache_scheduled_match_summaries(rows):
 def patch_main(m):
     async def get_matches(date=None):
         d = date or datetime.now(timezone.utc).date().isoformat()
-        payload, cached = _cached_api("fixtures", {"date": d}, FIXTURES_TTL)
+        try:
+            payload, cached = _cached_api("fixtures", {"date": d}, FIXTURES_TTL)
+        except RuntimeError as exc:
+            message = str(exc)
+            if "Free plans do not have access to this date" in message:
+                raise m.HTTPException(
+                    status_code=400,
+                    detail={
+                        "message": "Bu tarih API-Football Free planının erişim aralığının dışında.",
+                        "requested_date": d,
+                        "hint": "Free plan yalnızca API'nin izin verdiği yakın tarih aralığındaki maçları döndürebilir."
+                    },
+                )
+            raise
         rows = [_map(x) for x in payload.get("response", [])]
 
         # Upcoming fixtures are persisted individually only when the daily source was refreshed.
