@@ -1,3 +1,4 @@
+import asyncio
 import re
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -31,19 +32,46 @@ def local_day_window(target):
     s=datetime.combine(target,datetime.min.time(),tzinfo=ISTANBUL); e=s+timedelta(days=1)
     return int(s.astimezone(timezone.utc).timestamp()),int(e.astimezone(timezone.utc).timestamp())
 
-async def get_matches_for_local_date(target):
+async def _fixture_rows(target):
     start,end=local_day_window(target)
-    payload=await five._get("fixtures",{"start_time":start,"end_time":end,"status":"all","lang":"en","include":"odds","per_page":50})
+    payload=await five._get("fixtures",{"start_time":start,"end_time":end,"status":"all","lang":"en","per_page":100})
     out=[]; seen=set()
     for fixture in payload.get("data") or []:
         row=five._fixture_row(fixture); mid=str(row.get("MatchID") or ""); kickoff=row.get("KickoffUTC") or row.get("Date") or ""
         try: local=datetime.fromisoformat(str(kickoff).replace("Z","+00:00")).astimezone(ISTANBUL).date()
         except ValueError: continue
         if local!=target or not mid or mid in seen: continue
-        seen.add(mid)
-        row["_markets"]=five._markets_from_odds({"data":{"odds":fixture.get("odds") or {}}},live=row.get("Status")=="live")
-        out.append(row)
+        seen.add(mid); out.append((row,fixture))
     return out
+
+async def get_matches_for_local_date(target):
+    pairs=await _fixture_rows(target)
+    try:
+        payload=await five._get("fixtures",{**dict(),"start_time":local_day_window(target)[0],"end_time":local_day_window(target)[1],"status":"all","lang":"en","include":"odds","per_page":50})
+        by_id={str(x.get("id")):x for x in payload.get("data") or []}
+        out=[]
+        for row,fixture in pairs:
+            full=by_id.get(str(row["MatchID"]))
+            if full is not None:
+                row["_markets"]=five._markets_from_odds({"data":{"odds":full.get("odds") or {}}},live=row.get("Status")=="live")
+            else: row["_markets"]=[]
+            out.append(row)
+        return out
+    except HTTPException as exc:
+        # Free/Community do not support include=odds on list endpoints. Fall back to
+        # the documented per-fixture odds endpoint, with a small concurrency cap.
+        if exc.status_code != 502 or "insufficient_plan" not in str(exc.detail).lower(): raise
+        sem=asyncio.Semaphore(4)
+        async def load(row):
+            async with sem:
+                try:
+                    odds=await five._get(f"fixtures/{row['MatchID']}/odds",{"bookmakers":"bet365","lang":"en"})
+                    row["_markets"]=five._markets_from_odds(odds,live=row.get("Status")=="live")
+                except Exception: row["_markets"]=[]
+                return row
+        # Respect the 20/min hourly-plan burst ceiling by limiting the fallback pool.
+        rows=[p[0] for p in pairs[:19]]
+        return await asyncio.gather(*(load(r) for r in rows))
 
 def _norm(v): return re.sub(r"\s+"," ",str(v or "").strip().lower())
 def requested_count(m):
