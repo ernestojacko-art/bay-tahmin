@@ -5,7 +5,7 @@ from datetime import date,datetime,timedelta,timezone
 from zoneinfo import ZoneInfo
 import five_dollar_bridge as five
 from football_intelligence_data import build_match_context
-TZ=ZoneInfo('Europe/Istanbul'); ENGINE='BAY TAHMİN FOOTBALL INTELLIGENCE ENGINE'; VERSION='0.3.1'
+TZ=ZoneInfo('Europe/Istanbul'); ENGINE='BAY TAHMİN FOOTBALL INTELLIGENCE ENGINE'; VERSION='0.3.2'
 def dates(s):
  t=str(s or '').lower();n=datetime.now(TZ).date();o=[]
  if 'yarın' in t or 'yarin' in t:o+=[n+timedelta(days=1)]
@@ -72,7 +72,7 @@ async def day(d):
  s,e=window(d);p=await five._get('fixtures',{'start_time':s,'end_time':e,'status':'all','lang':'en','per_page':50,'include':'odds,stats'});out=[]
  for f in p.get('data') or []:
   try:ld=datetime.fromisoformat(str(f.get('kickoff_utc')).replace('Z','+00:00')).astimezone(TZ).date()
-  except ValueError:continue
+  except (ValueError,TypeError):continue
   if ld!=d:continue
   r=five._fixture_row(f);r['_markets']=five._markets_from_odds({'data':{'odds':f.get('odds') or {}}},live=False);r['_stats']=f.get('statistics') or {};out.append(r)
  return out
@@ -105,6 +105,14 @@ async def answer(main,msg,history=None):
  cs=await asyncio.gather(*(cand(r) for r in rows));sel=choose(cs,msg);data=pack(sel)
  prompt=f'''Sen {ENGINE} sürüm {VERSION} profesyonel futbol istihbarat motorusun. Kullanıcı: {msg}\nDOSSIER:{json.dumps(data,ensure_ascii=False)}\nTahmin ana kaynağı futbol modelidir; piyasa yalnızca çapraz kontroldür. Model Elo, recency-weighted form, takım hücum/savunma gücü, Poisson/Dixon-Coles, Monte Carlo ve ortak İY/MS dağılımını kullanır. Expected goals sonuçlardan türetilmiş proxy'dir. İY/MS doğrudan market yoksa model projeksiyonudur. Verilmeyen bilgiyi uydurma. En güçlü futbol kanıtlarını açıkla, belirsizliği belirt, kupon oluşturma. Türkçe yanıt ver.'''
  return {'reply':await main.gemini_generate(prompt),'engine':ENGINE,'engine_version':VERSION,'dates':[d.isoformat() for d in ds],'match_count':len(rows),'analyzed_count':len(cs),'source':'5DollarFootballAPI + statistical football model'}
+async def analyze_match(main,mid):
+ p=await five._get(f'fixtures/{int(mid)}',{'lang':'en','include':'events,stats'});f=p.get('data') or {}
+ if not f:return {'analysis':{'mac_ozeti':'Maç bulunamadı.'},'engine':ENGINE,'engine_version':VERSION}
+ r=five._fixture_row(f);r['_markets']=five._markets_from_odds({'data':{'odds':f.get('odds') or {}}},live=False);r['_stats']=f.get('statistics') or {}
+ c=await cand(r);m=c['model'];pr=m['probabilities'];best=max(('1','X','2'),key=lambda x:pr[x]);score=m['exact_scores'][0]['score'] if m['exact_scores'] else None
+ names={'1':c['match'].get('Team1'),'X':'Beraberlik','2':c['match'].get('Team2')}
+ analysis={'mac_ozeti':f"Model sonucu: {names[best]} önde. Model olasılıkları 1: %{pr['1']}, X: %{pr['X']}, 2: %{pr['2']}.",'takimlarin_durumu':f"{c['context']['home']['name']} formu {c['context']['home']['recent_form'].get('form','-')}, {c['context']['away']['name']} formu {c['context']['away']['recent_form'].get('form','-')}.",'olasi_senaryo':f"Model beklenen gol proxy'si {m['expected_goals']['home']} - {m['expected_goals']['away']}; en olası skor {score or 'belirsiz'}.",'ms_tahmini':names[best],'kg_tahmini':'Var' if pr['btts_yes']>=50 else 'Yok','alt_ust_tahmini':'Üst 2.5' if pr['over_2_5']>=50 else 'Alt 2.5','ilk_yari_tahmini':max(m['first_half'],key=m['first_half'].get),'ht_ft_tahmini':max(m['iyms']['probabilities'],key=m['iyms']['probabilities'].get),'surpriz_ihtimali':f"En güçlü düz olmayan İY/MS: {next(((k,v) for k,v in m['iyms']['probabilities'].items() if k not in ('1/1','X/X','2/2')),('yok',0))[0]}",'en_guvenilir_tahminler':[f"MS {names[best]} (%{pr[best]})",f"KG {'Var' if pr['btts_yes']>=50 else 'Yok'} (%{max(pr['btts_yes'],pr['btts_no'])})",f"Alt/Üst {'Üst 2.5' if pr['over_2_5']>=50 else 'Alt 2.5'} (%{max(pr['over_2_5'],pr['under_2_5'])})"],'risk_seviyesi':'düşük' if max(pr['1'],pr['X'],pr['2'])>=60 else 'orta' if max(pr['1'],pr['X'],pr['2'])>=48 else 'yüksek','tahmin_gerekcesi':f"{m['method']}. Piyasa verisi yalnızca çapraz kontrol olarak kullanılır. Veri kalitesi: {c['context'].get('data_quality',{}).get('level','unknown')}. xG resmi sağlayıcı xG'si değil, sonuçlardan türetilmiş model proxy'sidir."}
+ return {'analysis':analysis,'model':m,'context':c['context'],'engine':ENGINE,'engine_version':VERSION,'source':'5DollarFootballAPI + statistical football model'}
 async def match_answer(main,mid,msg,history=None):
  p=await five._get(f'fixtures/{int(mid)}',{'lang':'en','include':'events,stats'});f=p.get('data') or {}
  if not f:return {'reply':'Maç bulunamadı.','engine':ENGINE}
@@ -124,5 +132,7 @@ def patch_main(main):
   msg=str(p.get('message') or p.get('question') or '').strip()
   if not msg:raise HTTPException(400,'Mesaj boş olamaz.')
   return await match_answer(main,match_id,msg,p.get('history') or [])
- main.app.router.routes=[r for r in main.app.router.routes if not(isinstance(r,APIRoute) and r.path in ('/chat','/matches/{match_id}/chat') and 'POST' in(r.methods or set()))]
- main.app.add_api_route('/chat',chat,methods=['POST']);main.app.add_api_route('/matches/{match_id}/chat',mch,methods=['POST'])
+ async def ana(match_id:int):
+  return await analyze_match(main,match_id)
+ main.app.router.routes=[r for r in main.app.router.routes if not(isinstance(r,APIRoute) and r.path in ('/chat','/matches/{match_id}/chat','/ai/analyze/{match_id}') and ('POST' in (r.methods or set()) or 'GET' in (r.methods or set())))]
+ main.app.add_api_route('/chat',chat,methods=['POST']);main.app.add_api_route('/matches/{match_id}/chat',mch,methods=['POST']);main.app.add_api_route('/ai/analyze/{match_id}',ana,methods=['GET'])
