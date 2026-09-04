@@ -58,45 +58,32 @@ def _fixture_row(f):
     away = teams.get("away") or {}
     goals = f.get("goals") or {}
     return {
-        "MatchID": str(f.get("id")),
-        "matchID": str(f.get("id")),
-        "id": str(f.get("id")),
-        "Date": f.get("kickoff_utc") or "",
-        "DateTime": f.get("kickoff_utc") or "",
-        "Time": f.get("kickoff_utc") or "",
-        "Country": league.get("country") or "",
-        "League": league.get("name") or "",
-        "LeagueID": league.get("id"),
+        "MatchID": str(f.get("id")), "matchID": str(f.get("id")), "id": str(f.get("id")),
+        "Date": f.get("kickoff_utc") or "", "DateTime": f.get("kickoff_utc") or "", "Time": f.get("kickoff_utc") or "",
+        "Country": league.get("country") or "", "League": league.get("name") or "", "LeagueID": league.get("id"),
         "Teams": f"{home.get('name', '')} - {away.get('name', '')}".strip(" -"),
-        "Team1": home.get("name") or "",
-        "Team2": away.get("name") or "",
-        "HomeTeamID": home.get("id"),
-        "AwayTeamID": away.get("id"),
-        "HomeTeamLogo": home.get("logo"),
-        "AwayTeamLogo": away.get("logo"),
-        "Status": _status(f.get("status")),
-        "KickoffUTC": f.get("kickoff_utc"),
-        "Score": {
-            "home": goals.get("home"),
-            "away": goals.get("away"),
-            "halftimeHome": goals.get("half_home"),
-            "halftimeAway": goals.get("half_away"),
-        },
+        "Team1": home.get("name") or "", "Team2": away.get("name") or "",
+        "HomeTeamID": home.get("id"), "AwayTeamID": away.get("id"),
+        "HomeTeamLogo": home.get("logo"), "AwayTeamLogo": away.get("logo"),
+        "Status": _status(f.get("status")), "KickoffUTC": f.get("kickoff_utc"),
+        "Score": {"home": goals.get("home"), "away": goals.get("away"), "halftimeHome": goals.get("half_home"), "halftimeAway": goals.get("half_away")},
     }
 
 
+# 5Dollar's documented API uses compact keys such as goalline/cards/asian_half.
+# The canonical names below are the internal Bay Tahmin names.
+KEY_ALIASES = {
+    "asian": "asian_handicap", "goalline": "goal_line", "corner": "corner_line", "cards": "card_line",
+    "cards_asian": "card_asian", "asian_half": "asian_handicap_half", "goalline_half": "goal_line_half",
+    "corner_half": "corner_line_half", "corner_asian": "corner_asian", "btts": "btts", "1x2_half": "1x2_half",
+}
+
 MARKET_NAMES = {
-    "1x2": "Maç Sonucu 1X2",
-    "asian_handicap": "Asya Handikap",
-    "goal_line": "Alt/Üst Gol",
-    "corner_line": "Alt/Üst Korner",
-    "corner_asian": "Korner Asya Handikap",
-    "card_line": "Alt/Üst Kart",
-    "card_asian": "Kart Asya Handikap",
-    "asian_handicap_half": "İlk Yarı Asya Handikap",
-    "goal_line_half": "İlk Yarı Alt/Üst Gol",
-    "corner_line_half": "İlk Yarı Alt/Üst Korner",
-    "btts": "Karşılıklı Gol (KG)",
+    "1x2": "Maç Sonucu 1X2", "1x2_half": "İlk Yarı Maç Sonucu",
+    "asian_handicap": "Asya Handikap", "goal_line": "Alt/Üst Gol", "corner_line": "Alt/Üst Korner",
+    "corner_asian": "Korner Asya Handikap", "card_line": "Alt/Üst Kart", "card_asian": "Kart Asya Handikap",
+    "asian_handicap_half": "İlk Yarı Asya Handikap", "goal_line_half": "İlk Yarı Alt/Üst Gol",
+    "corner_line_half": "İlk Yarı Alt/Üst Korner", "btts": "Karşılıklı Gol (KG)",
 }
 
 
@@ -128,22 +115,19 @@ def _add_market(markets, name, market_type, values):
 
 
 def _markets_from_odds(odds_payload, live=False):
-    """Normalize the documented single-bookmaker response and tolerate wrapped responses."""
     markets = []
     data = odds_payload.get("data") or {}
-
-    # Current 5Dollar docs show /fixtures/{id}/odds returning data.odds for Bet365.
     bookmaker_entries = []
     if isinstance(data.get("odds"), dict):
         bookmaker_entries.append(("Bet 365", data["odds"]))
-
-    # Also tolerate a wrapped {bookmakers:[{name, odds}, ...]} response.
-    for bookmaker in data.get("bookmakers", []) if isinstance(data.get("bookmakers"), list) else []:
-        if isinstance(bookmaker, dict):
-            bookmaker_entries.append((bookmaker.get("name") or "Bet 365", bookmaker.get("odds") or {}))
+    if isinstance(data.get("bookmakers"), list):
+        for bookmaker in data["bookmakers"]:
+            if isinstance(bookmaker, dict):
+                bookmaker_entries.append((bookmaker.get("name") or "Bet 365", bookmaker.get("odds") or {}))
 
     for book_name, odds in bookmaker_entries:
-        for key, entry in odds.items():
+        for raw_key, entry in odds.items():
+            key = KEY_ALIASES.get(raw_key, raw_key)
             stage = _stage(entry, live=live)
             if not stage:
                 continue
@@ -153,6 +137,8 @@ def _markets_from_odds(odds_payload, live=False):
             name = f"{display} ({book_name})"
             if key == "1x2":
                 _add_market(markets, name, "1x2", [("1", stage.get("home")), ("X", stage.get("draw")), ("2", stage.get("away"))])
+            elif key == "1x2_half":
+                _add_market(markets, name, "1x2_half", [("1", stage.get("home")), ("X", stage.get("draw")), ("2", stage.get("away"))])
             elif key in {"goal_line", "goal_line_half", "corner_line", "corner_line_half", "card_line"}:
                 line = stage.get("line")
                 _add_market(markets, name, key, [(f"Üst {line}", stage.get("over")), (f"Alt {line}", stage.get("under"))])
@@ -182,20 +168,12 @@ async def get_match_detail(match_id: int):
     markets = _markets_from_odds(odds_payload, live=live)
     return {
         "fixture": fixture,
-        "match": {
-            "id": row["id"],
-            "kickoff": row["KickoffUTC"],
-            "status": row["Status"],
-            "league": {"id": str(row.get("LeagueID") or ""), "name": row.get("League") or "", "country": row.get("Country") or ""},
-            "homeTeam": {"id": str(row.get("HomeTeamID") or ""), "name": row.get("Team1") or "", "logoUrl": row.get("HomeTeamLogo")},
-            "awayTeam": {"id": str(row.get("AwayTeamID") or ""), "name": row.get("Team2") or "", "logoUrl": row.get("AwayTeamLogo")},
-            "score": row["Score"],
-        },
-        "markets": markets,
-        "source": "5dollarfootballapi",
-        "odds_cache": "5dollarfootballapi",
-        "prediction": None,
-        "prediction_cache": "unavailable",
+        "match": {"id": row["id"], "kickoff": row["KickoffUTC"], "status": row["Status"],
+                  "league": {"id": str(row.get("LeagueID") or ""), "name": row.get("League") or "", "country": row.get("Country") or ""},
+                  "homeTeam": {"id": str(row.get("HomeTeamID") or ""), "name": row.get("Team1") or "", "logoUrl": row.get("HomeTeamLogo")},
+                  "awayTeam": {"id": str(row.get("AwayTeamID") or ""), "name": row.get("Team2") or "", "logoUrl": row.get("AwayTeamLogo")}, "score": row["Score"]},
+        "markets": markets, "source": "5dollarfootballapi", "odds_cache": "5dollarfootballapi",
+        "prediction": None, "prediction_cache": "unavailable",
     }
 
 
@@ -217,18 +195,10 @@ def patch_main(m):
             return None
         markets = detail.get("markets", [])
         iyms = next((x for x in markets if "iy/ms" in x.get("gameName", "").lower() or "ilk yarı/maç sonucu" in x.get("gameName", "").lower()), None)
-        return {
-            "match": m.slim_match(row),
-            "markets": m.market_payload(markets),
-            "iyms_market_open": bool(iyms),
-            "iyms": m.parse_iyms_market(iyms) if iyms else None,
-        }
+        return {"match": m.slim_match(row), "markets": m.market_payload(markets), "iyms_market_open": bool(iyms), "iyms": m.parse_iyms_market(iyms) if iyms else None}
 
     m.inspect_match = inspect_match
-    m.app.router.routes = [
-        r for r in m.app.router.routes
-        if getattr(r, "path", None) not in ["/matches", "/mac/{match_id}", "/match/{match_id}"]
-    ]
+    m.app.router.routes = [r for r in m.app.router.routes if getattr(r, "path", None) not in ["/matches", "/mac/{match_id}", "/match/{match_id}"]]
     m.app.add_api_route("/matches", get_matches, methods=["GET"])
     m.app.add_api_route("/mac/{match_id}", get_match_detail, methods=["GET"])
     m.app.add_api_route("/match/{match_id}", get_match_detail, methods=["GET"])
