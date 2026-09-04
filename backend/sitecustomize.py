@@ -1,4 +1,4 @@
-# Bay Tahmin runtime bridge: transparently switches the existing FastAPI app to API-Football.
+# Bay Tahmin runtime bridge: switches the existing FastAPI app to the active football data provider.
 # Supports both Render start styles: `main:app` from backend/ and `backend.main:app` from repo root.
 import importlib.abc
 import importlib.util
@@ -36,9 +36,12 @@ class _MainPatch(importlib.abc.MetaPathFinder, importlib.abc.Loader):
             source = fh.read()
         exec(compile(source, module.__spec__.origin, "exec"), module.__dict__)
 
-        # Do not hide bridge failures: the app must fail visibly rather than silently
-        # falling back to the exhausted NOSYAPI source.
-        if os.getenv("API_FOOTBALL_KEY") or os.getenv("APIFOOTBALL_KEY"):
+        # 5DollarFootballAPI is the temporary provider while API-Football is suspended.
+        # It takes precedence when its secret is configured in Render.
+        if os.getenv("FIVE_DOLLAR_API_KEY"):
+            from five_dollar_bridge import patch_main
+            patch_main(module)
+        elif os.getenv("API_FOOTBALL_KEY") or os.getenv("APIFOOTBALL_KEY"):
             from api_football_bridge import patch_main
             patch_main(module)
 
