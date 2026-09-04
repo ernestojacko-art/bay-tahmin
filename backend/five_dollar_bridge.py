@@ -152,19 +152,19 @@ def _markets_from_odds(odds_payload, live=False):
 
 async def get_matches(date=None):
     start, end = _day_window(date)
-    payload = await _get("fixtures", {"start_time": start, "end_time": end, "status": "all", "lang": "tr"})
+    payload = await _get("fixtures", {"start_time": start, "end_time": end, "status": "all", "lang": "en"})
     rows = [_fixture_row(x) for x in (payload.get("data") or [])]
     return {"data": rows, "source": "5dollarfootballapi", "cache": {"hit": False}, "live": {"count": sum(x["Status"] == "live" for x in rows), "source": "5dollarfootballapi"}}
 
 
 async def get_match_detail(match_id: int):
-    fixture_payload = await _get(f"fixtures/{match_id}", {"lang": "tr"})
+    fixture_payload = await _get(f"fixtures/{match_id}", {"lang": "en"})
     fixture = fixture_payload.get("data") or {}
     if not fixture:
         raise HTTPException(status_code=404, detail="Maç bulunamadı.")
     row = _fixture_row(fixture)
     live = row.get("Status") == "live"
-    odds_payload = await _get(f"fixtures/{match_id}/odds", {"bookmakers": "bet365", "lang": "tr"})
+    odds_payload = await _get(f"fixtures/{match_id}/odds", {"bookmakers": "bet365", "lang": "en"})
     markets = _markets_from_odds(odds_payload, live=live)
     return {
         "fixture": fixture,
