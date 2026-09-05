@@ -68,6 +68,24 @@ async def _get(path: str, params: dict | None = None, *, retries: int = 0):
     raise HTTPException(status_code=502, detail=f"5DollarFootballAPI bağlantısı başarısız: {last_error}")
 
 
+async def _get_all(path: str, params: dict | None = None):
+    """Fetch every page from a paginated list endpoint."""
+    base_params = dict(params or {})
+    page = 1
+    rows = []
+    while True:
+        page_params = dict(base_params)
+        page_params["page"] = page
+        payload = await _get(path, page_params)
+        rows.extend(payload.get("data") or [])
+        pagination = payload.get("pagination") or {}
+        if not pagination.get("has_more"):
+            return rows
+        page += 1
+        if page > 100:
+            raise HTTPException(status_code=502, detail="5DollarFootballAPI sayfalama limiti aşıldı.")
+
+
 def _day_window(date: str | None):
     tz = ZoneInfo("Europe/Istanbul")
     if date:
@@ -147,10 +165,8 @@ def _markets_from_odds(odds_payload, live=False):
     bookmaker_entries = []
     raw_odds = data.get("odds")
 
-    # Fixture detail commonly returns data.odds as a single Bet365 dict.
     if isinstance(raw_odds, dict):
         bookmaker_entries.append(("Bet 365", raw_odds))
-    # Fixture-list include=odds may return data.odds as a bookmaker list.
     elif isinstance(raw_odds, list):
         for bookmaker in raw_odds:
             if not isinstance(bookmaker, dict): continue
@@ -165,7 +181,6 @@ def _markets_from_odds(odds_payload, live=False):
                 if isinstance(odds, dict):
                     bookmaker_entries.append((bookmaker.get("name") or "Bet 365", odds))
 
-    # Some list responses put the bookmaker object directly under fixture.odds.
     if not bookmaker_entries and isinstance(odds_payload.get("odds"), list):
         for bookmaker in odds_payload["odds"]:
             if isinstance(bookmaker, dict) and isinstance(bookmaker.get("odds"), dict):
@@ -201,12 +216,12 @@ async def get_matches(date=None):
         result = dict(cached[1]); result["cache"] = {"hit": True}; return result
     start, end = _day_window(date)
     try:
-        payload = await _get("fixtures", {"start_time": start, "end_time": end, "status": "all", "lang": "en", "per_page": 50, "include": "odds"})
+        rows_raw = await _get_all("fixtures", {"start_time": start, "end_time": end, "status": "all", "lang": "en", "per_page": 50, "include": "odds"})
     except HTTPException:
         if cached and now_ts - cached[0] < _MATCH_STALE_TTL_SECONDS:
             result = dict(cached[1]); result["cache"] = {"hit": True, "stale": True}; return result
         raise
-    rows = [_fixture_row(x) for x in (payload.get("data") or [])]
+    rows = [_fixture_row(x) for x in rows_raw]
     result = {"data": rows, "source": "5dollarfootballapi", "cache": {"hit": False}, "live": {"count": sum(x["Status"] == "live" for x in rows), "source": "5dollarfootballapi"}}
     _MATCH_CACHE[cache_key] = (now_ts, result)
     return result
