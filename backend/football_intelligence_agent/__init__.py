@@ -4,7 +4,7 @@ import asyncio, importlib.util, re
 from datetime import timedelta
 from pathlib import Path
 
-_IMPL_PATH = Path(__file__).resolve().parent.parent / "football_intelligence_agent_v5.py"
+_IMPL_PATH = Path(__file__).resolve().parent.parent / "football_intelligence_agent_v6.py"
 spec = importlib.util.spec_from_file_location("_bay_tahmin_engine_impl", _IMPL_PATH)
 if spec is None or spec.loader is None:
     raise ImportError(f"Unable to load Intelligence Engine: {_IMPL_PATH}")
@@ -52,7 +52,6 @@ async def answer(main, message, history=None):
     if len(candidates) > 1:
         return {"reply":"Aynı takım eşleşmesi için birden fazla gerçek maç bulundu. Tarihi veya organizasyonu belirtirsen doğru karşılaşmayı analiz edebilirim.","engine":ENGINE,"engine_version":VERSION,"match_count":len(candidates),"analyzed_count":0,"source":"5DollarFootballAPI"}
     return await _impl.answer(main, message, history or [])
-
 
 def patch_main(main):
     from fastapi import HTTPException, Request
