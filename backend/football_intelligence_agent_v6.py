@@ -6,7 +6,7 @@ then delegates the statistical ensemble and tracking layers to v1.0.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -14,7 +14,7 @@ import football_intelligence_agent_v5 as v5
 import football_intelligence_data as data
 
 ENGINE = v5.ENGINE
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 dates, num, isiy, issur = v5.dates, v5.num, v5.isiy, v5.issur
 market, window, day = v5.market, v5.window, v5.day
 five = v5.five
@@ -83,6 +83,22 @@ def _league_table(fixtures: list[dict[str, Any]]) -> dict[str, Any]:
     return {"data": {"table": rows}, "source": "computed_from_finished_results_pre_match", "window_days": 365}
 
 
+def _first_half_league_averages(fixtures: list[dict[str, Any]]) -> tuple[float | None, float | None]:
+    home, away = [], []
+    for fixture in fixtures:
+        goals = fixture.get("goals") or {}
+        hh, aa = goals.get("half_home"), goals.get("half_away")
+        if hh is None or aa is None:
+            continue
+        try:
+            home.append(float(hh)); away.append(float(aa))
+        except (TypeError, ValueError):
+            continue
+    if not home:
+        return None, None
+    return sum(home) / len(home), sum(away) / len(away)
+
+
 async def _safe_base_context(row: dict[str, Any]) -> dict[str, Any]:
     cutoff = _kickoff_ts(row)
     league_id = row.get("LeagueID")
@@ -110,15 +126,18 @@ async def _safe_base_context(row: dict[str, Any]) -> dict[str, Any]:
     ava = sum(float(x) for x in away_total) / len(away_total) if away_total else 1.10
     sh = data._strength(hf, hs, avh, True)
     sa = data._strength(af, ass, ava, False)
-
+    fh_home, fh_away = _first_half_league_averages(fixtures)
     providers = {"api_football_configured": False, "rich_stats_configured": False, "news_configured": False}
+    availability = {"xg": False, "xga": False, "shots": False, "shots_on_target": False, "big_chances": False, "possession": False, "corners": False, "cards": False, "injuries": False, "suspensions": False, "lineups": False, "news": False}
+    if fh_home is not None:
+        availability["first_half_goals"] = True
     return {
         "home": {"team_id": row.get("HomeTeamID"), "name": row.get("Team1"), "recent_form": hf, "standing": hs, "strength": sh},
         "away": {"team_id": row.get("AwayTeamID"), "name": row.get("Team2"), "recent_form": af, "standing": ass, "strength": sa},
-        "league": {"id": league_id, "name": row.get("League"), "country": row.get("Country"), "home_goal_avg": avh, "away_goal_avg": ava},
+        "league": {"id": league_id, "name": row.get("League"), "country": row.get("Country"), "home_goal_avg": avh, "away_goal_avg": ava, "first_half_home_goal_avg": fh_home, "first_half_away_goal_avg": fh_away},
         "history_window_days": 365,
         "h2h": h2h,
-        "data_availability": {"xg": False, "xga": False, "shots": False, "shots_on_target": False, "big_chances": False, "possession": False, "corners": False, "cards": False, "injuries": False, "suspensions": False, "lineups": False, "news": False},
+        "data_availability": availability,
         "provider_readiness": providers,
         "data_quality": {"level": "high" if hf.get("sample", 0) >= 10 and af.get("sample", 0) >= 10 else "medium" if hf.get("sample", 0) >= 5 and af.get("sample", 0) >= 5 else "low", "home_sample": hf.get("sample", 0), "away_sample": af.get("sample", 0)},
     }
@@ -154,14 +173,15 @@ async def _safe_statistics(row: dict[str, Any]):
     return hs, aws, fixture_stats
 
 
-async def cand(row: dict[str, Any]):
+async def cand(row: dict[str, Any], *, track: bool = True):
     context = await _safe_context(row)
     result = {"match": row, "context": context, "model": model(context), "markets": row.get("_markets") or []}
-    try:
-        from prediction_tracking import track_predictions
-        track_predictions(row, result["model"])
-    except Exception:
-        pass
+    if track:
+        try:
+            from prediction_tracking import track_predictions
+            track_predictions(row, result["model"])
+        except Exception:
+            pass
     return result
 
 
