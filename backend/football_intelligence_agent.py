@@ -123,7 +123,8 @@ async def analyze_match(main,mid):
 async def match_answer(main,mid,msg,history=None):
  p=await five._get(f'fixtures/{int(mid)}',{'lang':'en','include':'events,stats'});f=p.get('data') or {}
  if not f:return {'reply':'Maç bulunamadı.','engine':ENGINE}
- r=five._fixture_row(f);r['_markets']=five._markets_from_odds({'data':{'odds':f.get('odds') or {}}},live=False);r['_stats']=f.get('statistics') or {};c=await cand(r);k=max(('1','X','2'),key=lambda x:c['model']['probabilities'][x]);data=pack([(c['model']['probabilities'][k],c,k)]);prompt=f'''Sen {ENGINE} maç özel uzmanısın. Kullanıcı: {msg}\nDOSSIER:{json.dumps(data,ensure_ascii=False)}\nGerçek futbol verisi ve istatistiksel modeli kullan. Oranlar sadece çapraz kontroldür. Eksik veriyi uydurma. Türkçe profesyonel yanıt ver; kupon oluşturma.''';try:
+ r=five._fixture_row(f);r['_markets']=five._markets_from_odds({'data':{'odds':f.get('odds') or {}}},live=False);r['_stats']=f.get('statistics') or {};c=await cand(r);k=max(('1','X','2'),key=lambda x:c['model']['probabilities'][x]);data=pack([(c['model']['probabilities'][k],c,k)]);prompt=f'''Sen {ENGINE} maç özel uzmanısın. Kullanıcı: {msg}\nDOSSIER:{json.dumps(data,ensure_ascii=False)}\nGerçek futbol verisi ve istatistiksel modeli kullan. Oranlar sadece çapraz kontroldür. Eksik veriyi uydurma. Türkçe profesyonel yanıt ver; kupon oluşturma.'''
+  try:
   reply=await asyncio.wait_for(main.gemini_generate(prompt),timeout=8.0)
  except Exception:
   pr=c['model']['probabilities']; iy=max(c['model']['iyms']['probabilities'],key=c['model']['iyms']['probabilities'].get)
