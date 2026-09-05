@@ -42,6 +42,17 @@ class _MainPatch(importlib.abc.MetaPathFinder, importlib.abc.Loader):
                 pass
             from admin_api import patch_main as patch_admin
             patch_admin(module)
+            # Final prediction guard: all production intelligence routes use the
+            # reconciled candidate model before any response reaches the client.
+            try:
+                import football_intelligence_agent as intelligence_facade
+                from prediction_consistency import install as install_consistency
+                install_consistency(intelligence_facade._impl)
+                intelligence_facade.cand = intelligence_facade._impl.cand
+            except Exception:
+                # The data provider remains available even if the optional guard
+                # cannot initialize; the underlying engine still owns prediction logic.
+                pass
         elif os.getenv("API_FOOTBALL_KEY") or os.getenv("APIFOOTBALL_KEY"):
             from api_football_bridge import patch_main
             patch_main(module)
