@@ -165,6 +165,12 @@ async def match_answer(main,mid,msg,history=None):
  return {'reply':reply,'match_id':str(mid),'engine':ENGINE,'engine_version':VERSION,'analysis_context':dossier,'source':'5DollarFootballAPI + transparent statistical ensemble'}
 def patch_main(main):
  from fastapi import Request,HTTPException
+ from fastapi.routing import APIRoute
+ # Production override: remove legacy market-only handlers first. FastAPI matches
+ # routes in registration order, so merely appending a new /chat route leaves the
+ # old handler active and can return the obsolete 'open market not found' message.
+ targets={'/chat','/matches/{match_id}/chat','/ai/analyze/{match_id}'}
+ main.app.router.routes=[route for route in main.app.router.routes if not (isinstance(route, APIRoute) and route.path in targets)]
  async def chat(req:Request):
   try:p=await req.json()
   except Exception:p={}
