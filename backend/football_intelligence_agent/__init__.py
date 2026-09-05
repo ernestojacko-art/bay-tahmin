@@ -1,21 +1,15 @@
-"""Runtime facade for the Bay Tahmin Football Intelligence Engine.
-
-The implementation lives in the sibling football_intelligence_agent.py file. This
-package facade exists because Python resolves a package before a same-name module;
-it lets main.py import a stable patch_main symbol while preserving the existing
-engine implementation unchanged.
-"""
+"""Runtime facade for the Bay Tahmin Football Intelligence Engine."""
 from __future__ import annotations
 
+import asyncio
 import importlib.util
-import os
 import re
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 _IMPL_NAME = "_bay_tahmin_football_intelligence_agent_impl"
 _IMPL_PATH = Path(__file__).resolve().parent.parent / "football_intelligence_agent.py"
-
 _spec = importlib.util.spec_from_file_location(_IMPL_NAME, _IMPL_PATH)
 if _spec is None or _spec.loader is None:
     raise ImportError(f"Unable to load Intelligence Engine implementation: {_IMPL_PATH}")
@@ -41,36 +35,72 @@ match_answer = _impl.match_answer
 
 def _norm(value: object) -> str:
     text = str(value or "").lower().strip()
-    text = text.replace("ı", "i").replace("ş", "s").replace("ğ", "g").replace("ü", "u").replace("ö", "o").replace("ç", "c")
-    return re.sub(r"\s+", " ", text)
+    text = text.translate(str.maketrans({"ı":"i","ş":"s","ğ":"g","ü":"u","ö":"o","ç":"c"}))
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _team_tokens(name: object) -> list[str]:
+    words = [w for w in _norm(name).split() if len(w) >= 3]
+    return words
+
+
+def _team_mentioned(team: object, text: str) -> bool:
+    n = _norm(team)
+    if not n:
+        return False
+    if n in text:
+        return True
+    tokens = _team_tokens(team)
+    return bool(tokens) and all(token in text for token in tokens)
+
+
+def _explicit_match_requested(message: str, row: dict) -> bool:
+    """Recognise a named fixture regardless of league, date, punctuation or Turkish casing."""
+    text = _norm(message)
+    return _team_mentioned(row.get("Team1"), text) and _team_mentioned(row.get("Team2"), text)
+
+
+async def _rows_for_match_lookup(message: str) -> list[dict]:
+    requested = dates(message)
+    # If the user names teams but gives no date, search the upcoming fixture
+    # catalogue instead of assuming today's date. This applies to every fixture.
+    raw = _norm(message)
+    has_explicit_date = any(word in raw for word in ("bugun", "yarin", "cumartesi", "pazar")) or bool(re.search(r"\b\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?\b", raw))
+    if not has_explicit_date:
+        base = dates("")[0]
+        requested = [base + timedelta(days=i) for i in range(7)]
+    groups = await asyncio.gather(*(day(d) for d in requested))
+    return [row for group in groups for row in group]
 
 
 async def answer(main, message, history=None):
-    """Route explicit match questions to that exact fixture before list selection.
+    """Global chat router: a named fixture always resolves to that exact fixture."""
+    rows = await _rows_for_match_lookup(message)
+    candidates = [row for row in rows if _explicit_match_requested(message, row)]
 
-    A question naming two teams is a match-specific request. It must never fall
-    through to the generic top-N selector, because that can otherwise return
-    unrelated matches when the user asked about one fixture.
-    """
-    text = _norm(message)
-    requested_dates = dates(message)
-    rows = [row for group in await __import__("asyncio").gather(*(day(d) for d in requested_dates)) for row in group]
-
-    candidates = []
-    for row in rows:
-        home = _norm(row.get("Team1"))
-        away = _norm(row.get("Team2"))
-        if home and away and home in text and away in text:
-            candidates.append(row)
-
+    # Exactly one real fixture match means this is a match-specific question.
+    # It can NEVER fall through to generic top-N selection.
     if len(candidates) == 1:
         return await match_answer(main, int(candidates[0]["MatchID"]), message, history or [])
+
+    # If multiple same-name fixtures exist, require the normal date/context
+    # resolver rather than guessing. No unrelated match is ever substituted.
+    if len(candidates) > 1:
+        return {
+            "reply": "Aynı takım eşleşmesi için birden fazla gerçek maç bulundu. Tarihi veya organizasyonu belirtirsen doğru karşılaşmayı analiz edebilirim.",
+            "engine": ENGINE,
+            "engine_version": VERSION,
+            "match_count": len(candidates),
+            "analyzed_count": 0,
+            "source": "5DollarFootballAPI",
+        }
 
     return await _impl.answer(main, message, history or [])
 
 
 def patch_main(main):
-    """Replace legacy market-only chat/analyse handlers with the Intelligence Engine."""
+    """Install Intelligence Engine routes and remove legacy conflicting handlers."""
     from fastapi import HTTPException, Request
 
     app = main.app
@@ -117,6 +147,4 @@ def patch_main(main):
     return app
 
 
-__all__ = [
-    "ENGINE", "VERSION", "answer", "analyze_match", "match_answer", "patch_main",
-]
+__all__ = ["ENGINE", "VERSION", "answer", "analyze_match", "match_answer", "patch_main"]
