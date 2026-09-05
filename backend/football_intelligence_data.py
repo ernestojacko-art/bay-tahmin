@@ -1,5 +1,6 @@
 """Historical football context for BAY TAHMİN FOOTBALL INTELLIGENCE ENGINE."""
 from __future__ import annotations
+import os
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
@@ -89,9 +90,11 @@ def _metrics(games, team_id):
         elif tg == tc: pts += 1; form.append('D')
         else: form.append('L')
     n = len(form)
+    btts = sum(1 for f in games if (f.get('goals') or {}).get('home') not in (None, 0) and (f.get('goals') or {}).get('away') not in (None, 0))
+    over = sum(1 for f in games if (f.get('goals') or {}).get('home') is not None and (f.get('goals') or {}).get('away') is not None and float((f.get('goals') or {}).get('home')) + float((f.get('goals') or {}).get('away')) > 2.5)
     return {'sample': n, 'points': pts, 'points_per_game': round(pts/n,3) if n else None,
             'goals_for_avg': round(gf/n,3) if n else None, 'goals_against_avg': round(ga/n,3) if n else None,
-            'goal_diff_avg': round((gf-ga)/n,3) if n else None, 'form': ''.join(form)}
+            'goal_diff_avg': round((gf-ga)/n,3) if n else None, 'btts_rate': round(btts/n,3) if n else None, 'over_2_5_rate': round(over/n,3) if n else None, 'form': ''.join(form)}
 
 def team_form(fixtures, team_id):
     games = _team_games(fixtures, team_id, 20)
@@ -150,9 +153,11 @@ async def build_match_context(row):
     av = lc.get('league_goal_avg') or {'home':1.35,'away':1.10}
     h2h = _h2h(lc['fixtures'], row.get('HomeTeamID'), row.get('AwayTeamID'))
     quality = 'high' if hf.get('sample',0)>=10 and af.get('sample',0)>=10 else 'medium' if hf.get('sample',0)>=5 and af.get('sample',0)>=5 else 'low'
+    providers = {'api_football_configured': bool(os.getenv('API_FOOTBALL_KEY') or os.getenv('APIFOOTBALL_KEY')), 'rich_stats_configured': bool(os.getenv('FOOTBALL_STATS_API_KEY')), 'news_configured': bool(os.getenv('FOOTBALL_NEWS_API_KEY'))}
     return {'home': {'team_id':row.get('HomeTeamID'),'name':row.get('Team1'),'recent_form':hf,'standing':hs,'strength':_strength(hf,hs,av.get('home'),True)},
             'away': {'team_id':row.get('AwayTeamID'),'name':row.get('Team2'),'recent_form':af,'standing':ass,'strength':_strength(af,ass,av.get('away'),False)},
             'league': {'id':lid,'name':row.get('League'),'country':row.get('Country'),'home_goal_avg':av.get('home'),'away_goal_avg':av.get('away')},
             'history_window_days':365,'h2h':h2h,
-            'data_availability': {'xg': False, 'xga': False, 'shots': False, 'injuries': False, 'lineups': False, 'news': False},
+            'data_availability': {'xg': False, 'xga': False, 'shots': False, 'shots_on_target': False, 'big_chances': False, 'possession': False, 'corners': False, 'cards': False, 'injuries': False, 'suspensions': False, 'lineups': False, 'news': False},
+            'provider_readiness': providers,
             'data_quality': {'level':quality,'home_sample':hf.get('sample',0),'away_sample':af.get('sample',0)}}
