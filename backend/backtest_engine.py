@@ -1,7 +1,7 @@
 """Production historical backtest runner for BAY TAHMIN Intelligence Engine."""
 from __future__ import annotations
 from typing import Any
-import football_intelligence_agent_v5 as engine
+import football_intelligence_agent_v6 as engine
 
 def _actual_result(fixture: dict[str, Any]) -> str | None:
     goals = fixture.get("goals") or {}
