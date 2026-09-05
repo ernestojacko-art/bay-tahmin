@@ -451,9 +451,16 @@ JSON: {{\"intro\":\"...\",\"selections\":[{{\"match_id\":\"...\",\"market\":\"ta
     parsed["valid_selections"] = valid
     return {"reply": format_validated(parsed, requested)}
 
-# Direct runtime integration: Render starts `main:app`, so apply the API-Football bridge
-# after all existing routes/functions have been defined. This does not depend on sitecustomize.
+# Runtime integration: Render starts main:app. The production football data source is
+# 5DollarFootballAPI and the Football Intelligence routes must be patched last so they
+# replace the legacy market-only chat/analyse routes.
 import sys
-if os.getenv("API_FOOTBALL_KEY") or os.getenv("APIFOOTBALL_KEY"):
-    from api_football_bridge import patch_main
-    patch_main(sys.modules[__name__])
+if os.getenv("FIVE_DOLLAR_API_KEY"):
+    from five_dollar_bridge import patch_main as patch_five_dollar_main
+    patch_five_dollar_main(sys.modules[__name__])
+
+    from football_intelligence_agent import patch_main as patch_intelligence_main
+    patch_intelligence_main(sys.modules[__name__])
+elif os.getenv("API_FOOTBALL_KEY") or os.getenv("APIFOOTBALL_KEY"):
+    from api_football_bridge import patch_main as patch_api_football_main
+    patch_api_football_main(sys.modules[__name__])
