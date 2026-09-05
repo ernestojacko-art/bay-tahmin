@@ -72,32 +72,27 @@ def _model(c: dict[str, Any]) -> dict[str, Any]:
 
 async def cand(r):
     result = await _original_cand(r)
-    # Rebuild the model through this layer so divergence and availability metadata
-    # are attached without changing the underlying v0.8 statistical calculations.
-    model = _model(result.get("context") or {})
-    result["model"] = model
+    model_result = _model(result.get("context") or {})
+    result["model"] = model_result
     try:
-        track_predictions(result.get("match") or {}, model)
+        track_predictions(result.get("match") or {}, model_result)
     except Exception:
         pass
     return result
 
 
-# v3.analyze_match resolves its global cand reference at runtime; patch it to this wrapper.
 v3.cand = cand
 v3.model = _model
 
 
 async def analyze_match(main, mid):
     result = await _original_analyze_match(main, mid)
-    # v3's analyze function may have retained a pre-wrapper model in its local
-    # result; normalize it through the same public model contract.
-    model = result.get("model") or {}
-    if model:
-        model = _model(result.get("context") or {})
-        result["model"] = model
+    model_result = result.get("model") or {}
+    if model_result:
+        model_result = _model(result.get("context") or {})
+        result["model"] = model_result
         try:
-            track_predictions((await main.get_match_detail(mid)) or {}, model)
+            track_predictions((await main.get_match_detail(mid)) or {}, model_result)
         except Exception:
             pass
     return result
@@ -118,6 +113,9 @@ async def resolve_finished_match(match: dict[str, Any]) -> int:
     half_away = goals.get("half_away")
     return resolve_fixture(int(mid), int(home), int(away), half_home, half_away)
 
+
+# Public model export is required by the production facade.
+model = _model
 
 __all__ = [
     "ENGINE", "VERSION", "dates", "num", "isiy", "issur", "market", "window", "day",
