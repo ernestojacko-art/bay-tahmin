@@ -81,6 +81,7 @@ def patch_main(main):
         # execute the same Intelligence Engine instead of requiring a second UI call.
         detail = await main.get_match_detail(match_id)
         engine_result = await analyze_match(main, match_id)
+        detail["analysis"] = engine_result.get("analysis")
         detail["prediction"] = engine_result.get("analysis")
         detail["intelligence_engine"] = {"name": ENGINE, "version": VERSION}
         detail["prediction_cache"] = "intelligence_engine"
