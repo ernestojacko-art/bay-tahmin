@@ -52,6 +52,22 @@ def score_prediction(probabilities: dict[str, float], actual: str) -> dict[str, 
     return _score_multiclass(probabilities, actual, ("1", "X", "2"))
 
 
+def _ft_probabilities(model: dict[str, Any]) -> dict[str, float]:
+    """Read the canonical FT probabilities exposed by the consistency layer."""
+    probs = model.get("ms_probabilities") or model.get("probabilities") or {}
+    return {k: float(probs[k]) for k in ("1", "X", "2") if probs.get(k) is not None}
+
+
+def _ou_probabilities(model: dict[str, Any]) -> dict[str, float]:
+    probs = model.get("ou_2_5") or {}
+    return {"over_2_5": float(probs["Üst"]), "under_2_5": float(probs["Alt"])} if probs.get("Üst") is not None and probs.get("Alt") is not None else {}
+
+
+def _btts_probabilities(model: dict[str, Any]) -> dict[str, float]:
+    probs = model.get("btts_probabilities") or {}
+    return {"btts_yes": float(probs["Var"]), "btts_no": float(probs["Yok"])} if probs.get("Var") is not None and probs.get("Yok") is not None else {}
+
+
 async def fetch_historical_fixtures(league_id: int, *, season: str | None = None, start_time: int | None = None, end_time: int | None = None, limit: int = 100) -> list[dict[str, Any]]:
     params: dict[str, Any] = {"status": "finished", "include": "stats", "lang": "en", "per_page": 50}
     if season: params["season"] = season
@@ -75,31 +91,30 @@ async def backtest_fixtures(fixtures: list[dict[str, Any]]) -> dict[str, Any]:
             continue
         try:
             row = engine.five._fixture_row(fixture)
-            # Critical: track=False keeps historical experiments out of live production metrics.
-            candidate = await engine.cand(row, track=False)
+            # v6 cand has a single row contract; historical tracking is not performed here.
+            candidate = await engine.cand(row)
             model = candidate.get("model", {})
-            probabilities = model.get("probabilities") or {}
+            probabilities = _ft_probabilities(model)
             if not all(k in probabilities for k in ("1", "X", "2")):
                 skipped += 1
                 continue
             ft_score = score_prediction(probabilities, actual)
             item = {"match_id": fixture.get("id"), "kickoff_ts": fixture.get("kickoff_ts"), "teams": row.get("Teams"), "actual_result": actual, "predicted_result": ft_score["predicted"], "probabilities": probabilities, "match_result_score": ft_score}
+            goal_probs = _ou_probabilities(model)
             actual_goals = _actual_goals(fixture)
-            if actual_goals:
-                goal_probs = {k: probabilities.get(k) for k in ("over_2_5", "under_2_5")}
-                if all(v is not None for v in goal_probs.values()):
-                    gs = _score_multiclass(goal_probs, actual_goals, ("over_2_5", "under_2_5"))
-                    item["goals_score"] = gs; metrics["goals"].append(gs)
+            if actual_goals and goal_probs:
+                gs = _score_multiclass(goal_probs, actual_goals, ("over_2_5", "under_2_5"))
+                item["goals_score"] = gs; metrics["goals"].append(gs)
+            btts_probs = _btts_probabilities(model)
             actual_btts = _actual_btts(fixture)
-            if actual_btts:
-                btts_probs = {k: probabilities.get(k) for k in ("btts_yes", "btts_no")}
-                if all(v is not None for v in btts_probs.values()):
-                    bs = _score_multiclass(btts_probs, "btts_yes" if actual_btts == "yes" else "btts_no", ("btts_yes", "btts_no"))
-                    item["btts_score"] = bs; metrics["btts"].append(bs)
+            if actual_btts and btts_probs:
+                bs = _score_multiclass(btts_probs, "btts_yes" if actual_btts == "yes" else "btts_no", ("btts_yes", "btts_no"))
+                item["btts_score"] = bs; metrics["btts"].append(bs)
             actual_htft = _actual_htft(fixture)
             iyms = ((model.get("iyms") or {}).get("probabilities") or {})
-            if actual_htft and all(k in iyms for k in ("1/1", "1/X", "1/2", "X/1", "X/X", "X/2", "2/1", "2/X", "2/2")):
-                hs = _score_multiclass(iyms, actual_htft, ("1/1", "1/X", "1/2", "X/1", "X/X", "X/2", "2/1", "2/X", "2/2"))
+            keys = ("1/1", "1/X", "1/2", "X/1", "X/X", "X/2", "2/1", "2/X", "2/2")
+            if actual_htft and all(k in iyms for k in keys):
+                hs = _score_multiclass(iyms, actual_htft, keys)
                 item["htft_score"] = hs; metrics["htft"].append(hs)
             rows.append(item); metrics["match_result"].append(ft_score)
         except Exception as exc:
