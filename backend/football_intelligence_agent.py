@@ -74,7 +74,14 @@ def model(c):
  hp,ap=hf.get('points_per_game'),af.get('points_per_game')
  if hp is not None and ap is not None:
   d=max(-3,min(3,float(hp)-float(ap)));x*=1+max(-.1,min(.1,d*.035));y*=1-max(-.08,min(.08,d*.025))
- M=mat(x,y); q=mprob(M);\n # Blend statistical goal matrix with observed historical BTTS/O2.5 only when both teams have samples.\n for key in ('btts_yes','over_2_5'):\n  hv,avv=hf.get('btts_rate' if key=='btts_yes' else 'over_2_5_rate'),af.get('btts_rate' if key=='btts_yes' else 'over_2_5_rate')\n  if hv is not None and avv is not None:\n   observed=(float(hv)+float(avv))/2; q[key]=.70*q[key]+.30*observed\n q['btts_no']=1-q['btts_yes'];q['under_2_5']=1-q['over_2_5']\n e=.5 if hs.get('elo') is None or as_.get('elo') is None else 1/(1+10**(-((float(hs['elo'])+55-float(as_['elo']))/400)))
+ M=mat(x,y); q=mprob(M)
+ # Blend statistical goal matrix with observed historical BTTS/O2.5 only when both teams have samples.
+ for key in ('btts_yes','over_2_5'):
+  hv,avv=hf.get('btts_rate' if key=='btts_yes' else 'over_2_5_rate'),af.get('btts_rate' if key=='btts_yes' else 'over_2_5_rate')
+  if hv is not None and avv is not None:
+   observed=(float(hv)+float(avv))/2; q[key]=.70*q[key]+.30*observed
+ q['btts_no']=1-q['btts_yes'];q['under_2_5']=1-q['over_2_5']
+ e=.5 if hs.get('elo') is None or as_.get('elo') is None else 1/(1+10**(-((float(hs['elo'])+55-float(as_['elo']))/400)))
  seed=int((float(hs.get('elo') or 1500)*31+float(as_.get('elo') or 1500)*17))&0xffffffff
  models={'elo':_elo_probs(e),'poisson_dixon_coles':{k:q[k] for k in ('1','X','2')},'form':_form_probs(hf,af),'home_away':_split_probs(hf,af),'monte_carlo':_mc_probs(x,y,seed)}
  consensus=_consensus(models); hm=mat(x*.44,y*.44,6); sm=mat(x*.56,y*.56,6); joint={}
