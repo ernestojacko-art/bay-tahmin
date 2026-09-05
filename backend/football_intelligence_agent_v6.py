@@ -88,13 +88,13 @@ async def _safe_base_context(row: dict[str, Any]) -> dict[str, Any]:
     league_id = row.get("LeagueID")
     if not league_id or cutoff is None:
         base = await v5.v4.v3._original_build_match_context(row)
-        base["data_boundary"] = {"pre_match_history_cutoff": cutoff, "no_target_result_leakage": cutoff is not None}
+        base["data_boundary"] = {"pre_match_history_cutoff": cutoff, "no_target_result_leakage": False}
         return base
 
     start = cutoff - 365 * 86400
     try:
-        payload = await five._get(f"leagues/{int(league_id)}/fixtures", {"start_time": int(start), "end_time": int(cutoff), "status": "finished", "lang": "en", "per_page": 100})
-        fixtures = _finished_before(payload.get("data") or [], cutoff)
+        fixtures = await five._get_all(f"leagues/{int(league_id)}/fixtures", {"start_time": int(start), "end_time": int(cutoff), "status": "finished", "lang": "en", "per_page": 100})
+        fixtures = _finished_before(fixtures, cutoff)
     except Exception:
         fixtures = []
 
@@ -111,11 +111,7 @@ async def _safe_base_context(row: dict[str, Any]) -> dict[str, Any]:
     sh = data._strength(hf, hs, avh, True)
     sa = data._strength(af, ass, ava, False)
 
-    providers = {
-        "api_football_configured": False,
-        "rich_stats_configured": False,
-        "news_configured": False,
-    }
+    providers = {"api_football_configured": False, "rich_stats_configured": False, "news_configured": False}
     return {
         "home": {"team_id": row.get("HomeTeamID"), "name": row.get("Team1"), "recent_form": hf, "standing": hs, "strength": sh},
         "away": {"team_id": row.get("AwayTeamID"), "name": row.get("Team2"), "recent_form": af, "standing": ass, "strength": sa},
