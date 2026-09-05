@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -22,7 +23,6 @@ _impl = importlib.util.module_from_spec(_spec)
 sys.modules[_IMPL_NAME] = _impl
 _spec.loader.exec_module(_impl)
 
-# Re-export the engine API used by the application.
 ENGINE = _impl.ENGINE
 VERSION = _impl.VERSION
 dates = _impl.dates
@@ -35,9 +35,38 @@ day = _impl.day
 cand = _impl.cand
 choose = _impl.choose
 pack = _impl.pack
-answer = _impl.answer
 analyze_match = _impl.analyze_match
 match_answer = _impl.match_answer
+
+
+def _norm(value: object) -> str:
+    text = str(value or "").lower().strip()
+    text = text.replace("ı", "i").replace("ş", "s").replace("ğ", "g").replace("ü", "u").replace("ö", "o").replace("ç", "c")
+    return re.sub(r"\s+", " ", text)
+
+
+async def answer(main, message, history=None):
+    """Route explicit match questions to that exact fixture before list selection.
+
+    A question naming two teams is a match-specific request. It must never fall
+    through to the generic top-N selector, because that can otherwise return
+    unrelated matches when the user asked about one fixture.
+    """
+    text = _norm(message)
+    requested_dates = dates(message)
+    rows = [row for group in await __import__("asyncio").gather(*(day(d) for d in requested_dates)) for row in group]
+
+    candidates = []
+    for row in rows:
+        home = _norm(row.get("Team1"))
+        away = _norm(row.get("Team2"))
+        if home and away and home in text and away in text:
+            candidates.append(row)
+
+    if len(candidates) == 1:
+        return await match_answer(main, int(candidates[0]["MatchID"]), message, history or [])
+
+    return await _impl.answer(main, message, history or [])
 
 
 def patch_main(main):
@@ -77,8 +106,6 @@ def patch_main(main):
     @app.get("/match/{match_id}")
     @app.get("/mac/{match_id}")
     async def intelligence_match_detail(match_id: int):
-        # The frontend already opens /match/{id}. Make that existing entry point
-        # execute the same Intelligence Engine instead of requiring a second UI call.
         detail = await main.get_match_detail(match_id)
         engine_result = await analyze_match(main, match_id)
         detail["analysis"] = engine_result.get("analysis")
