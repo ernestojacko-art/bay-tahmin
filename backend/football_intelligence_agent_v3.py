@@ -13,7 +13,7 @@ v2 = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(v2)
 
 ENGINE = v2.ENGINE
-VERSION = "0.7.0"
+VERSION = "0.7.1"
 dates, num, isiy, issur, market, window, day = v2.dates, v2.num, v2.isiy, v2.issur, v2.market, v2.window, v2.day
 _original_model = v2.model
 _original_build_match_context = v2.build_match_context
@@ -87,10 +87,15 @@ def _extract_statistics(stats):
     }
 
 
-def _side_value(stat, team_id, fixture):
+def _side_value(team_id, fixture):
     teams = fixture.get("teams") or {}
     home = teams.get("home") or {}
-    return "home" if str(home.get("id")) == str(team_id) else "away"
+    away = teams.get("away") or {}
+    if str(home.get("id")) == str(team_id):
+        return "home"
+    if str(away.get("id")) == str(team_id):
+        return "away"
+    return None
 
 
 def _aggregate_stat_games(games, team_id):
@@ -106,7 +111,9 @@ def _aggregate_stat_games(games, team_id):
         extracted = _extract_statistics(stats)
         if not extracted["available"]:
             continue
-        side = _side_value(stats, team_id, fixture)
+        side = _side_value(team_id, fixture)
+        if not side:
+            continue
         got_any = False
         for name, pair in extracted["pairs"].items():
             value = pair.get(side)
@@ -156,12 +163,27 @@ async def _team_statistics(team_id):
     }
 
 
+async def _fixture_statistics(match_id):
+    if not match_id:
+        return {}
+    try:
+        payload = await five._get(f"fixtures/{int(match_id)}", {"lang": "en", "include": "events,stats"})
+        fixture = payload.get("data") or {}
+        return fixture.get("statistics") or {}
+    except Exception:
+        return {}
+
+
 async def _rich_context(row):
     c = await _original_build_match_context(row)
     import asyncio
-    hs, aws = await asyncio.gather(_team_statistics(row.get("HomeTeamID")), _team_statistics(row.get("AwayTeamID")))
+    fixture_stats, (hs, aws) = await asyncio.gather(
+        _fixture_statistics(row.get("MatchID") or row.get("matchID") or row.get("id")),
+        asyncio.gather(_team_statistics(row.get("HomeTeamID")), _team_statistics(row.get("AwayTeamID"))),
+    )
     c["home"]["statistics"] = hs
     c["away"]["statistics"] = aws
+    c["fixture_statistics"] = fixture_stats
     availability = c.get("data_availability") or {}
     for side_stats in (hs, aws):
         for window_name in ("last_5", "last_10", "last_20"):
@@ -171,6 +193,10 @@ async def _rich_context(row):
                     availability["xg"] = availability.get("xg", False) or present
                 elif key in availability:
                     availability[key] = availability[key] or present
+    extracted = _extract_statistics(fixture_stats)
+    for key in ("shots", "shots_on_target", "dangerous_attacks", "attacks", "possession", "corners", "cards"):
+        availability[key] = availability.get(key, False) or key in extracted["pairs"]
+    availability["xg"] = availability.get("xg", False) or bool(extracted.get("xg"))
     c["data_availability"] = availability
     c["historical_statistics"] = {"home": hs, "away": aws, "windows": [5, 10, 20]}
     return c
@@ -218,7 +244,7 @@ def model(c):
 
 async def cand(r):
     c = await _rich_context(r)
-    stats = r.get("_stats") or {}
+    stats = r.get("_stats") or c.get("fixture_statistics") or {}
     c["fixture_statistics"] = stats
     extracted = _extract_statistics(stats)
     flags = c.get("data_availability") or {}
@@ -226,7 +252,6 @@ async def cand(r):
     for source, target in aliases.items():
         flags[target] = bool(flags.get(target)) or source in extracted["pairs"]
     flags["xg"] = bool(flags.get("xg")) or bool(extracted.get("xg"))
-    flags["xga"] = flags["xg"]
     c["data_availability"] = flags
     return {"match": r, "context": c, "model": model(c), "markets": r.get("_markets") or []}
 
