@@ -45,7 +45,7 @@ def patch_main(main):
     from fastapi import HTTPException, Request
 
     app = main.app
-    target_paths = {"/chat", "/matches/{match_id}/chat", "/ai/analyze/{match_id}"}
+    target_paths = {"/chat", "/matches/{match_id}/chat", "/ai/analyze/{match_id}", "/match/{match_id}", "/mac/{match_id}"}
     app.router.routes[:] = [r for r in app.router.routes if getattr(r, "path", None) not in target_paths]
 
     @app.post("/chat")
@@ -74,7 +74,20 @@ def patch_main(main):
     async def intelligence_analyze_match(match_id: int):
         return await analyze_match(main, match_id)
 
+    @app.get("/match/{match_id}")
+    @app.get("/mac/{match_id}")
+    async def intelligence_match_detail(match_id: int):
+        # The frontend already opens /match/{id}. Make that existing entry point
+        # execute the same Intelligence Engine instead of requiring a second UI call.
+        detail = await main.get_match_detail(match_id)
+        engine_result = await analyze_match(main, match_id)
+        detail["prediction"] = engine_result.get("analysis")
+        detail["intelligence_engine"] = {"name": ENGINE, "version": VERSION}
+        detail["prediction_cache"] = "intelligence_engine"
+        return detail
+
     return app
+
 
 __all__ = [
     "ENGINE", "VERSION", "answer", "analyze_match", "match_answer", "patch_main",
