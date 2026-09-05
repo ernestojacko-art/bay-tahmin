@@ -3,19 +3,15 @@ from __future__ import annotations
 
 
 def install(facade):
-    original = getattr(facade, "answer", None)
+    original = getattr(facade, "_model_only_iyms_surprises", None)
     if original is None or getattr(original, "_request_guard", False):
         return
 
-    async def guarded(main, message, history=None):
+    async def guarded(message, rows):
         text = str(message or "")
-        is_iyms = bool(facade._is_iyms_request(text))
-        is_surprise = bool(facade._is_surprise_request(text))
-        if not (is_iyms and is_surprise):
-            # The facade's generic path must handle ordinary requests; its
-            # HT/FT surprise scorer must never hijack "strongest picks" queries.
-            return await facade._impl.answer(main, message, history or [])
-        return await original(main, message, history or [])
+        if not facade._is_iyms_request(text) or not facade._is_surprise_request(text):
+            return None
+        return await original(message, rows)
 
     guarded._request_guard = True
-    facade.answer = guarded
+    facade._model_only_iyms_surprises = guarded
