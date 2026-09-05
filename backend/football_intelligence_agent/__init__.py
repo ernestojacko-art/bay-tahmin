@@ -8,7 +8,7 @@ from datetime import timedelta
 from pathlib import Path
 
 _IMPL_NAME = "_bay_tahmin_football_intelligence_agent_impl"
-_IMPL_PATH = Path(__file__).resolve().parent.parent / "football_intelligence_agent_v2.py"
+_IMPL_PATH = Path(__file__).resolve().parent.parent / "football_intelligence_agent_v3.py"
 _spec = importlib.util.spec_from_file_location(_IMPL_NAME, _IMPL_PATH)
 if _spec is None or _spec.loader is None:
     raise ImportError(f"Unable to load Intelligence Engine implementation: {_IMPL_PATH}")
