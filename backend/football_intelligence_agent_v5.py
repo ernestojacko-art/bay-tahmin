@@ -11,8 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
-import time
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +27,6 @@ VERSION = "1.0.0"
 dates, num, isiy, issur, market, window, day = v4.dates, v4.num, v4.isiy, v4.issur, v4.market, v4.window, v4.day
 five = v4.five
 model = v4.model
-match_answer = v4.match_answer
 resolve_finished_match = v4.resolve_finished_match
 performance_summary = v4.performance_summary
 
@@ -55,7 +53,7 @@ def _kickoff_ts(row: dict[str, Any]) -> float | None:
 
 def _is_live(row: dict[str, Any]) -> bool:
     status = str(row.get("Status") or row.get("status") or "").lower()
-    return status in {"live", "in_play", "inplay", "1h", "2h", "ht", "et", "pen"}
+    return status in {"live", "in_play", "inplay", "1h", "2h", "ht", "et"}
 
 
 def _walk(value):
@@ -102,15 +100,7 @@ def _xg(stats):
 
 
 def _extract_statistics(stats):
-    mapping = {
-        "shots": ("shots", "total_shots"),
-        "shots_on_target": ("shots_on_target", "shots_on_goal", "on_target"),
-        "dangerous_attacks": ("dangerous_attacks", "dangerous_attack"),
-        "attacks": ("attacks",),
-        "possession": ("possession", "ball_possession"),
-        "corners": ("corners", "corner_kicks"),
-        "cards": ("cards", "yellow_cards", "total_cards"),
-    }
+    mapping = {"shots": ("shots", "total_shots"), "shots_on_target": ("shots_on_target", "shots_on_goal", "on_target"), "dangerous_attacks": ("dangerous_attacks", "dangerous_attack"), "attacks": ("attacks",), "possession": ("possession", "ball_possession"), "corners": ("corners", "corner_kicks"), "cards": ("cards", "yellow_cards", "total_cards")}
     pairs = {}
     for name, aliases in mapping.items():
         pair = _stat_pair(stats, aliases)
@@ -122,10 +112,8 @@ def _extract_statistics(stats):
 
 def _side_value(team_id, fixture):
     teams = fixture.get("teams") or {}
-    if str((teams.get("home") or {}).get("id")) == str(team_id):
-        return "home"
-    if str((teams.get("away") or {}).get("id")) == str(team_id):
-        return "away"
+    if str((teams.get("home") or {}).get("id")) == str(team_id): return "home"
+    if str((teams.get("away") or {}).get("id")) == str(team_id): return "away"
     return None
 
 
@@ -134,36 +122,29 @@ def _aggregate_stat_games(games, team_id):
     first_half = {k: [] for k in metrics if k != "xg"}
     observed_matches = 0
     for fixture in games:
-        extracted = _extract_statistics(fixture.get("statistics") or {})
+        stats = fixture.get("statistics") or {}
+        extracted = _extract_statistics(stats)
         side = _side_value(team_id, fixture)
-        if not side or not extracted["available"]:
-            continue
+        if not side or not extracted["available"]: continue
         got_any = False
         for name, pair in extracted["pairs"].items():
             value = pair.get(side)
-            if value is not None:
-                metrics[name].append(float(value)); got_any = True
+            if value is not None: metrics[name].append(float(value)); got_any = True
         if extracted.get("xg"):
             metrics["xg"].append(float(extracted["xg"][side])); got_any = True
-        fh = (fixture.get("statistics") or {}).get("first_half")
+        fh = stats.get("first_half") if isinstance(stats, dict) else None
         if isinstance(fh, dict):
             fh_extracted = _extract_statistics(fh)
             for name, pair in fh_extracted["pairs"].items():
                 value = pair.get(side)
-                if value is not None and name in first_half:
-                    first_half[name].append(float(value))
-        if got_any:
-            observed_matches += 1
-
-    def avg(values):
-        return round(sum(values) / len(values), 3) if values else None
-
+                if value is not None and name in first_half: first_half[name].append(float(value))
+        if got_any: observed_matches += 1
+    def avg(values): return round(sum(values) / len(values), 3) if values else None
     return {"observed_matches": observed_matches, "averages": {k: avg(v) for k, v in metrics.items()}, "first_half_averages": {k: avg(v) for k, v in first_half.items()}, "availability": {k: bool(v) for k, v in metrics.items()}, "source": "5DollarFootballAPI /teams/{id}/fixtures?include=stats"}
 
 
 async def _team_statistics(team_id, cutoff_ts):
-    if team_id is None:
-        return {"last_5": {}, "last_10": {}, "last_20": {}, "source": "unavailable"}
+    if team_id is None: return {"last_5": {}, "last_10": {}, "last_20": {}, "source": "unavailable"}
     try:
         fixtures = await five._get_all(f"teams/{int(team_id)}/fixtures", {"status": "finished", "include": "stats", "lang": "en", "per_page": 50})
     except Exception:
@@ -171,31 +152,24 @@ async def _team_statistics(team_id, cutoff_ts):
     finished = []
     for fixture in fixtures:
         ts = _number(fixture.get("kickoff_ts"))
-        if cutoff_ts is not None and ts is not None and ts >= cutoff_ts:
-            continue
-        if str(fixture.get("status", "")).lower() in {"finished", "ft", "aet", "pen"}:
-            finished.append(fixture)
+        if cutoff_ts is not None and ts is not None and ts >= cutoff_ts: continue
+        if str(fixture.get("status", "")).lower() in {"finished", "ft", "aet", "pen"}: finished.append(fixture)
     finished.sort(key=lambda f: f.get("kickoff_ts") or 0, reverse=True)
     return {"last_5": _aggregate_stat_games(finished[:5], team_id), "last_10": _aggregate_stat_games(finished[:10], team_id), "last_20": _aggregate_stat_games(finished[:20], team_id), "source": "5DollarFootballAPI", "as_of_kickoff": cutoff_ts}
 
 
 async def _fixture_statistics(match_id, allow=False):
-    if not match_id or not allow:
-        return {}
+    if not match_id or not allow: return {}
     try:
         payload = await five._get(f"fixtures/{int(match_id)}", {"lang": "en", "include": "events,stats"})
         return (payload.get("data") or {}).get("statistics") or {}
-    except Exception:
-        return {}
+    except Exception: return {}
 
 
 async def _safe_context(row):
     base = await v4.v3._original_build_match_context(row)
     cutoff = _kickoff_ts(row)
-    fixture_stats, (hs, aws) = await asyncio.gather(
-        _fixture_statistics(_fixture_id(row), allow=_is_live(row)),
-        asyncio.gather(_team_statistics(row.get("HomeTeamID"), cutoff), _team_statistics(row.get("AwayTeamID"), cutoff)),
-    )
+    fixture_stats, (hs, aws) = await asyncio.gather(_fixture_statistics(_fixture_id(row), allow=_is_live(row)), asyncio.gather(_team_statistics(row.get("HomeTeamID"), cutoff), _team_statistics(row.get("AwayTeamID"), cutoff)))
     base["home"]["statistics"] = hs
     base["away"]["statistics"] = aws
     base["fixture_statistics"] = fixture_stats
@@ -203,11 +177,9 @@ async def _safe_context(row):
     for side_stats in (hs, aws):
         for window_name in ("last_5", "last_10", "last_20"):
             observed = side_stats.get(window_name, {}).get("availability", {})
-            for key, present in observed.items():
-                availability[key] = bool(availability.get(key)) or bool(present)
+            for key, present in observed.items(): availability[key] = bool(availability.get(key)) or bool(present)
     extracted = _extract_statistics(fixture_stats)
-    for key in ("shots", "shots_on_target", "dangerous_attacks", "attacks", "possession", "corners", "cards"):
-        availability[key] = bool(availability.get(key)) or key in extracted["pairs"]
+    for key in ("shots", "shots_on_target", "dangerous_attacks", "attacks", "possession", "corners", "cards"): availability[key] = bool(availability.get(key)) or key in extracted["pairs"]
     availability["xg"] = bool(availability.get("xg")) or bool(extracted.get("xg"))
     base["data_availability"] = availability
     base["historical_statistics"] = {"home": hs, "away": aws, "windows": [5, 10, 20], "as_of_kickoff": cutoff}
@@ -217,24 +189,26 @@ async def _safe_context(row):
 
 async def cand(r):
     context = await _safe_context(r)
-    context["fixture_statistics"] = r.get("_stats") if _is_live(r) else {}
     result = {"match": r, "context": context, "model": model(context), "markets": r.get("_markets") or []}
     try:
         from prediction_tracking import track_predictions
         track_predictions(r, result["model"])
-    except Exception:
-        pass
+    except Exception: pass
     return result
+
+
+v4.v3.cand = cand
+v4.v3.model = model
+v4.v3.v2.cand = cand
+v4.v3.v2.model = model
 
 
 async def analyze_match(main, mid):
-    result = await v4.v3.analyze_match(main, mid)
-    if result.get("model"):
-        row = await main.get_match_detail(mid)
-        safe = await cand(v4.five._fixture_row(row))
-        result["model"] = safe["model"]
-        result["context"] = safe["context"]
-    return result
+    return await v4.v3.analyze_match(main, mid)
+
+
+async def match_answer(main, mid, msg, history=None):
+    return await v4.match_answer(main, mid, msg, history or [])
 
 
 async def answer(main, message, history=None):
