@@ -1,8 +1,9 @@
-"""BAY TAHMIN Football Intelligence Engine v0.7 statistics + historical stats layer.
+"""BAY TAHMIN Football Intelligence Engine v0.8 statistics + historical stats + xG/market layers.
 Wraps v0.5 without replacing routing or HT/FT logic.
 """
 from __future__ import annotations
 import importlib.util
+import math
 from pathlib import Path
 
 BASE_PATH = Path(__file__).resolve().parent / "football_intelligence_agent_v2.py"
@@ -13,7 +14,7 @@ v2 = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(v2)
 
 ENGINE = v2.ENGINE
-VERSION = "0.7.1"
+VERSION = "0.8.0"
 dates, num, isiy, issur, market, window, day = v2.dates, v2.num, v2.isiy, v2.issur, v2.market, v2.window, v2.day
 _original_model = v2.model
 _original_build_match_context = v2.build_match_context
@@ -100,10 +101,7 @@ def _side_value(team_id, fixture):
 
 def _aggregate_stat_games(games, team_id):
     """Aggregate only provider-observed statistics; never substitute score-derived proxies."""
-    metrics = {
-        "shots": [], "shots_on_target": [], "dangerous_attacks": [], "attacks": [],
-        "possession": [], "corners": [], "cards": [], "xg": [],
-    }
+    metrics = {"shots": [], "shots_on_target": [], "dangerous_attacks": [], "attacks": [], "possession": [], "corners": [], "cards": [], "xg": []}
     first_half = {k: [] for k in metrics if k != "xg"}
     observed_matches = 0
     for fixture in games:
@@ -155,12 +153,7 @@ async def _team_statistics(team_id):
         return {"last_5": {}, "last_10": {}, "last_20": {}, "source": "5DollarFootballAPI unavailable"}
     finished = [f for f in fixtures if str(f.get("status", "")).lower() in {"finished", "ft", "aet", "pen"}]
     finished.sort(key=lambda f: f.get("kickoff_ts") or 0, reverse=True)
-    return {
-        "last_5": _aggregate_stat_games(finished[:5], team_id),
-        "last_10": _aggregate_stat_games(finished[:10], team_id),
-        "last_20": _aggregate_stat_games(finished[:20], team_id),
-        "source": "5DollarFootballAPI",
-    }
+    return {"last_5": _aggregate_stat_games(finished[:5], team_id), "last_10": _aggregate_stat_games(finished[:10], team_id), "last_20": _aggregate_stat_games(finished[:20], team_id), "source": "5DollarFootballAPI"}
 
 
 async def _fixture_statistics(match_id):
@@ -202,6 +195,41 @@ async def _rich_context(row):
     return c
 
 
+def _norm3(d):
+    z = sum(d.values())
+    return {k: (v / z if z else 1 / 3) for k, v in d.items()}
+
+
+def _poisson(lam, k):
+    return math.exp(-lam) * lam ** k / math.factorial(k)
+
+
+def _xg_model(c):
+    home_xg = ((c.get("home", {}).get("statistics", {}).get("last_10", {}).get("averages", {}) or {}).get("xg"))
+    away_xg = ((c.get("away", {}).get("statistics", {}).get("last_10", {}).get("averages", {}) or {}).get("xg"))
+    if home_xg is None or away_xg is None:
+        return None
+    hx = max(.10, min(4.0, float(home_xg)))
+    ay = max(.08, min(3.8, float(away_xg)))
+    matrix = [[_poisson(hx, i) * _poisson(ay, j) for j in range(9)] for i in range(9)]
+    z = sum(sum(row) for row in matrix) or 1.0
+    matrix = [[v / z for v in row] for row in matrix]
+    p1 = sum(matrix[i][j] for i in range(9) for j in range(9) if i > j)
+    px = sum(matrix[i][i] for i in range(9))
+    p2 = max(0.0, 1 - p1 - px)
+    return {"1": round(p1 * 100, 2), "X": round(px * 100, 2), "2": round(p2 * 100, 2), "home_xg": hx, "away_xg": ay, "sample_window": 10}
+
+
+def _market_model(markets):
+    try:
+        raw = market(markets) or {}
+        if not raw:
+            return None
+        return {k: round(float(v), 2) for k, v in raw.items() if k in {"1", "X", "2"}}
+    except Exception:
+        return None
+
+
 def _statistics_adjustment(base, stats):
     if not stats.get("available"):
         return base, None
@@ -212,7 +240,7 @@ def _statistics_adjustment(base, stats):
     h, a = pair["home"], pair["away"]
     total = max(1.0, h + a)
     sp = {"1": .5 + .30 * (h / total - .5), "X": .24, "2": .5 + .30 * (a / total - .5)}
-    z = sum(sp.values()); sp = {k: v / z for k, v in sp.items()}
+    sp = _norm3(sp)
     for k in ("1", "X", "2"):
         p[k] = .90 * float(p[k]) + .10 * sp[k] * 100
     z = sum(p[k] for k in ("1", "X", "2"))
@@ -229,6 +257,7 @@ def model(c):
     result["probabilities"] = probs
     if adjustment:
         result["model_consensus"]["statistics_cross_signal"] = adjustment
+
     xg = stats.get("xg")
     if xg:
         old = result.get("expected_goals", {})
@@ -237,8 +266,37 @@ def model(c):
             "away": round(.65 * float(old.get("away", 0)) + .35 * xg["away"], 3),
             "kind": "provider_xg_blended",
         }
+
+    xg_model = _xg_model(c)
+    market_model = _market_model(c.get("markets") or [])
+    result["model_consensus"]["models"]["xg"] = xg_model or {"available": False, "reason": "provider xG not available for historical window"}
+    result["model_consensus"]["models"]["market_intelligence"] = market_model or {"available": False, "reason": "active 1X2 market unavailable"}
+    result["model_consensus"]["market_intelligence"] = {
+        "available": bool(market_model),
+        "probabilities": market_model,
+        "role": "cross_check_only",
+        "decision_weight": 0,
+    }
+
+    if xg_model:
+        # xG is a genuine statistical model; give it a capped 15% decision weight.
+        core = result["model_consensus"].get("consensus") or result["probabilities"]
+        weights = result["model_consensus"].get("weights") or {}
+        total_core = max(1, sum(float(v) for v in weights.values()))
+        new = {}
+        for key in ("1", "X", "2"):
+            old_pct = float(core.get(key, result["probabilities"][key]))
+            new[key] = .85 * old_pct + .15 * float(xg_model[key])
+        z = sum(new.values()) or 1.0
+        new = {k: round(v / z * 100, 2) for k, v in new.items()}
+        result["probabilities"].update(new)
+        result["model_consensus"]["consensus"] = new
+        result["model_consensus"]["xg_weight"] = 15
+
     result["historical_statistics"] = c.get("historical_statistics", {})
-    result["quality"] = "real fixture and historical statistics used when supplied; unavailable fields are not invented"
+    result["squad_impact"] = {"available": False, "reason": "No verified squad/injury/suspension provider is configured; no player impact is invented"}
+    result["news_intelligence"] = {"available": False, "reason": "No verified news provider is configured; no news is invented"}
+    result["quality"] = "real fixture and historical statistics used when supplied; xG and market are explicitly separated; unavailable fields are not invented"
     return result
 
 
