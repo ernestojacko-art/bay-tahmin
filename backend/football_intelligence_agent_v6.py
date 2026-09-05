@@ -14,11 +14,10 @@ import football_intelligence_agent_v5 as v5
 import football_intelligence_data as data
 
 ENGINE = v5.ENGINE
-VERSION = "1.1.1"
+VERSION = "1.1.2"
 dates, num, isiy, issur = v5.dates, v5.num, v5.isiy, v5.issur
 market, window, day = v5.market, v5.window, v5.day
 five = v5.five
-model = v5.model
 resolve_finished_match = v5.resolve_finished_match
 performance_summary = v5.performance_summary
 
@@ -106,14 +105,12 @@ async def _safe_base_context(row: dict[str, Any]) -> dict[str, Any]:
         base = await v5.v4.v3._original_build_match_context(row)
         base["data_boundary"] = {"pre_match_history_cutoff": cutoff, "no_target_result_leakage": False}
         return base
-
     start = cutoff - 365 * 86400
     try:
         fixtures = await five._get_all(f"leagues/{int(league_id)}/fixtures", {"start_time": int(start), "end_time": int(cutoff), "status": "finished", "lang": "en", "per_page": 100})
         fixtures = _finished_before(fixtures, cutoff)
     except Exception:
         fixtures = []
-
     hf = data.team_form(fixtures, row.get("HomeTeamID"))
     af = data.team_form(fixtures, row.get("AwayTeamID"))
     standings = _league_table(fixtures)
@@ -131,24 +128,13 @@ async def _safe_base_context(row: dict[str, Any]) -> dict[str, Any]:
     availability = {"xg": False, "xga": False, "shots": False, "shots_on_target": False, "big_chances": False, "possession": False, "corners": False, "cards": False, "injuries": False, "suspensions": False, "lineups": False, "news": False}
     if fh_home is not None:
         availability["first_half_goals"] = True
-    return {
-        "home": {"team_id": row.get("HomeTeamID"), "name": row.get("Team1"), "recent_form": hf, "standing": hs, "strength": sh},
-        "away": {"team_id": row.get("AwayTeamID"), "name": row.get("Team2"), "recent_form": af, "standing": ass, "strength": sa},
-        "league": {"id": league_id, "name": row.get("League"), "country": row.get("Country"), "home_goal_avg": avh, "away_goal_avg": ava, "first_half_home_goal_avg": fh_home, "first_half_away_goal_avg": fh_away},
-        "history_window_days": 365,
-        "h2h": h2h,
-        "data_availability": availability,
-        "provider_readiness": providers,
-        "data_quality": {"level": "high" if hf.get("sample", 0) >= 10 and af.get("sample", 0) >= 10 else "medium" if hf.get("sample", 0) >= 5 and af.get("sample", 0) >= 5 else "low", "home_sample": hf.get("sample", 0), "away_sample": af.get("sample", 0)},
-    }
+    return {"home": {"team_id": row.get("HomeTeamID"), "name": row.get("Team1"), "recent_form": hf, "standing": hs, "strength": sh}, "away": {"team_id": row.get("AwayTeamID"), "name": row.get("Team2"), "recent_form": af, "standing": ass, "strength": sa}, "league": {"id": league_id, "name": row.get("League"), "country": row.get("Country"), "home_goal_avg": avh, "away_goal_avg": ava, "first_half_home_goal_avg": fh_home, "first_half_away_goal_avg": fh_away}, "history_window_days": 365, "h2h": h2h, "data_availability": availability, "provider_readiness": providers, "data_quality": {"level": "high" if hf.get("sample", 0) >= 10 and af.get("sample", 0) >= 10 else "medium" if hf.get("sample", 0) >= 5 and af.get("sample", 0) >= 5 else "low", "home_sample": hf.get("sample", 0), "away_sample": af.get("sample", 0)}}
 
 
 async def _safe_context(row: dict[str, Any]) -> dict[str, Any]:
     base, stats = await asyncio.gather(_safe_base_context(row), _safe_statistics(row))
     hs, aws, fixture_stats = stats
-    base["home"]["statistics"] = hs
-    base["away"]["statistics"] = aws
-    base["fixture_statistics"] = fixture_stats
+    base["home"]["statistics"] = hs; base["away"]["statistics"] = aws; base["fixture_statistics"] = fixture_stats
     availability = base.get("data_availability") or {}
     for side_stats in (hs, aws):
         for window_name in ("last_5", "last_10", "last_20"):
@@ -159,8 +145,7 @@ async def _safe_context(row: dict[str, Any]) -> dict[str, Any]:
         availability[key] = bool(availability.get(key)) or key in extracted["pairs"]
     availability["xg"] = bool(availability.get("xg")) or bool(extracted.get("xg"))
     base["data_availability"] = availability
-    cutoff = _kickoff_ts(row)
-    live = v5._is_live(row)
+    cutoff = _kickoff_ts(row); live = v5._is_live(row)
     base["historical_statistics"] = {"home": hs, "away": aws, "windows": [5, 10, 20], "as_of_kickoff": cutoff}
     base["data_boundary"] = {"pre_match_history_cutoff": cutoff, "target_fixture_statistics_used": live, "no_target_result_leakage": not live}
     return base
@@ -171,6 +156,43 @@ async def _safe_statistics(row: dict[str, Any]):
     hs, aws = await asyncio.gather(v5._team_statistics(row.get("HomeTeamID"), cutoff), v5._team_statistics(row.get("AwayTeamID"), cutoff))
     fixture_stats = await v5._fixture_statistics(v5._fixture_id(row), allow=v5._is_live(row))
     return hs, aws, fixture_stats
+
+
+def _inject_independent_ht_prior(context: dict[str, Any]) -> dict[str, Any]:
+    league = context.get("league") or {}
+    hx = league.get("first_half_home_goal_avg")
+    hy = league.get("first_half_away_goal_avg")
+    if hx is None or hy is None:
+        return context
+    result = dict(context)
+    for side in ("home", "away"):
+        block = dict(result.get(side) or {})
+        form = dict(block.get("recent_form") or {})
+        fh = form.get("first_half")
+        if isinstance(fh, dict) and all(fh.get(k) is not None for k in ("goals_for_avg", "goals_against_avg")):
+            continue
+        if side == "home":
+            observed = {"goals_for_avg": float(hx), "goals_against_avg": float(hy), "source": "league_pre_match_first_half_prior"}
+        else:
+            observed = {"goals_for_avg": float(hy), "goals_against_avg": float(hx), "source": "league_pre_match_first_half_prior"}
+        form["first_half"] = observed
+        block["recent_form"] = form
+        result[side] = block
+    return result
+
+
+def model(context: dict[str, Any]) -> dict[str, Any]:
+    safe_context = _inject_independent_ht_prior(context)
+    result = v5.model(safe_context)
+    fh = result.get("first_half_model") or {}
+    if fh.get("source") == "observed_first_half_5_10_20_weighted":
+        home_fh = (context.get("home", {}).get("recent_form", {}) or {}).get("first_half", {}) or {}
+        away_fh = (context.get("away", {}).get("recent_form", {}) or {}).get("first_half", {}) or {}
+        if not all(home_fh.get(k) is not None for k in ("goals_for_avg", "goals_against_avg")) or not all(away_fh.get(k) is not None for k in ("goals_for_avg", "goals_against_avg")):
+            fh["source"] = "league_pre_match_first_half_prior"
+            fh["independent"] = True
+            result["first_half_model"] = fh
+    return result
 
 
 async def cand(row: dict[str, Any], *, track: bool = True):
