@@ -455,12 +455,14 @@ JSON: {{\"intro\":\"...\",\"selections\":[{{\"match_id\":\"...\",\"market\":\"ta
 # 5DollarFootballAPI and the Football Intelligence routes must be patched last so they
 # replace the legacy market-only chat/analyse routes.
 import sys
+# The legacy market-only /chat handler must never remain active.  Data-source bridges
+# are optional, but the Football Intelligence routes are always installed last.
 if os.getenv("FIVE_DOLLAR_API_KEY"):
     from five_dollar_bridge import patch_main as patch_five_dollar_main
     patch_five_dollar_main(sys.modules[__name__])
-
-    from football_intelligence_agent import patch_main as patch_intelligence_main
-    patch_intelligence_main(sys.modules[__name__])
 elif os.getenv("API_FOOTBALL_KEY") or os.getenv("APIFOOTBALL_KEY"):
     from api_football_bridge import patch_main as patch_api_football_main
     patch_api_football_main(sys.modules[__name__])
+
+from football_intelligence_agent import patch_main as patch_intelligence_main
+patch_intelligence_main(sys.modules[__name__])
