@@ -23,7 +23,6 @@ def _norm(value: object) -> str:
     text = text.translate(str.maketrans({"ı":"i","ş":"s","ğ":"g","ü":"u","ö":"o","ç":"c"}))
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", text)).strip()
 
-
 def _team_mentioned(team: object, text: str) -> bool:
     n = _norm(team)
     if not n: return False
@@ -31,11 +30,9 @@ def _team_mentioned(team: object, text: str) -> bool:
     tokens = [w for w in n.split() if len(w) >= 3]
     return bool(tokens) and all(w in text for w in tokens)
 
-
 def _explicit_match_requested(message: str, row: dict) -> bool:
     text = _norm(message)
     return _team_mentioned(row.get("Team1"), text) and _team_mentioned(row.get("Team2"), text)
-
 
 async def _rows_for_match_lookup(message: str) -> list[dict]:
     requested = dates(message)
@@ -46,7 +43,6 @@ async def _rows_for_match_lookup(message: str) -> list[dict]:
         requested = [base + timedelta(days=i) for i in range(7)]
     groups = await asyncio.gather(*(day(d) for d in requested))
     return [row for group in groups for row in group]
-
 
 async def answer(main, message, history=None):
     rows = await _rows_for_match_lookup(message)
@@ -61,7 +57,7 @@ async def answer(main, message, history=None):
 def patch_main(main):
     from fastapi import HTTPException, Request
     app = main.app
-    target = {"/chat","/matches/{match_id}/chat","/ai/analyze/{match_id}","/match/{match_id}","/mac/{match_id}","/ai/performance","/ai/resolve/{match_id}"}
+    target = {"/chat","/matches/{match_id}/chat","/ai/analyze/{match_id}","/match/{match_id}","/mac/{match_id}","/ai/performance","/ai/resolve/{match_id}","/ai/backtest"}
     app.router.routes[:] = [r for r in app.router.routes if getattr(r,"path",None) not in target]
     @app.post("/chat")
     async def intelligence_general_chat(request: Request):
@@ -85,6 +81,15 @@ def patch_main(main):
     async def intelligence_resolve(match_id: int):
         detail = await main.get_match_detail(match_id)
         return {"resolved": await resolve_finished_match(detail), "match_id": match_id}
+    @app.post("/ai/backtest")
+    async def intelligence_backtest(request: Request):
+        try: payload = await request.json()
+        except Exception: payload = {}
+        try: league_id = int(payload.get("league_id"))
+        except (TypeError, ValueError): raise HTTPException(status_code=400, detail="league_id zorunlu ve sayısal olmalı.")
+        limit = max(1, min(int(payload.get("limit") or 50), 250))
+        from backtest_engine import run_historical_backtest
+        return await run_historical_backtest(league_id, season=payload.get("season"), start_time=payload.get("start_time"), end_time=payload.get("end_time"), limit=limit)
     @app.get("/match/{match_id}")
     @app.get("/mac/{match_id}")
     async def intelligence_match_detail(match_id: int):
