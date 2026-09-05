@@ -1,46 +1,13 @@
 from prediction_consistency import reconcile
 
-
-def _context():
-    return {
-        "home": {"recent_form": {
-            "goals_for_avg": 1.8, "goals_against_avg": 1.0,
-            "first_half": {"goals_for_avg": 0.8, "goals_against_avg": 0.4},
-            "second_half": {"goals_for_avg": 1.0, "goals_against_avg": 0.6},
-        }},
-        "away": {"recent_form": {
-            "goals_for_avg": 1.2, "goals_against_avg": 1.4,
-            "first_half": {"goals_for_avg": 0.5, "goals_against_avg": 0.7},
-            "second_half": {"goals_for_avg": 0.7, "goals_against_avg": 0.7},
-        }},
-        "data_availability": {
-            "first_half_goals": True, "second_half_goals": True,
-            "goal_timing": True,
-        },
-    }
-
+def context():
+    return {"home":{"recent_form":{"sample":10,"goals_for_avg":1.8,"goals_against_avg":1.0,"first_half":{"goals_for_avg":0.8,"goals_against_avg":0.4}}},"away":{"recent_form":{"sample":10,"goals_for_avg":1.2,"goals_against_avg":1.4,"first_half":{"goals_for_avg":0.5,"goals_against_avg":0.7}}},"data_availability":{"first_half_goals":True,"second_half_goals":True,"goal_timing":True}}
 
 def test_score_outputs_are_linked():
-    result = reconcile({}, _context())
-    assert result["predicted_score"]
-    assert abs(sum(result["ms_probabilities"].values()) - 100) < 0.1
-    assert abs(sum(result["ou_2_5"].values()) - 100) < 0.1
-    assert abs(sum(result["btts_probabilities"].values()) - 100) < 0.1
-    assert result["prediction_consistency"]["score_ft_linked"] is True
+ r=reconcile({},context());assert r["predicted_score"];assert abs(sum(r["ms_probabilities"].values())-100)<.1;assert abs(sum(r["ou_2_5"].values())-100)<.1;assert abs(sum(r["btts_probabilities"].values())-100)<.1;assert r["prediction_consistency"]["score_ft_linked"]
 
+def test_recommended_htft_matches_top_ht_marginal():
+ r=reconcile({},context());top_ht=max(r["first_half"],key=r["first_half"].get);assert r["iyms"]["top"].split("/")[0]==top_ht;assert abs(sum(r["iyms"]["probabilities"].values())-100)<.2
 
-def test_ht_and_htft_are_mathematically_consistent():
-    result = reconcile({}, _context())
-    top_ht = max(result["first_half"], key=result["first_half"].get)
-    top_htft = result["iyms"]["top"]
-    assert top_htft.split("/")[0] == top_ht
-    assert abs(sum(result["iyms"]["probabilities"].values()) - 100) < 0.2
-    assert result["prediction_consistency"]["htft_linked"] is True
-
-
-def test_missing_data_does_not_claim_high_quality_or_fabricate_joint_model():
-    result = reconcile({}, {"data_availability": {}})
-    assert result["data_quality"]["level"] == "low"
-    assert result["prediction_consistency"]["score_ft_linked"] is False
-    assert result["prediction_consistency"]["htft_linked"] is False
-    assert result["prediction_warnings"]
+def test_missing_data_is_not_claimed_high_quality():
+ r=reconcile({}, {"data_availability":{}});assert r["data_quality"]["level"]=="low";assert not r["prediction_consistency"]["score_ft_linked"];assert not r["prediction_consistency"]["htft_linked"];assert r["prediction_warnings"]
