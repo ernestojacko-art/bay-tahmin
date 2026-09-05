@@ -171,20 +171,17 @@ def _markets_from_odds(odds_payload, live=False):
         for bookmaker in raw_odds:
             if not isinstance(bookmaker, dict): continue
             odds = bookmaker.get("odds") or {}
-            if isinstance(odds, dict):
-                bookmaker_entries.append((bookmaker.get("name") or "Bet 365", odds))
+            if isinstance(odds, dict): bookmaker_entries.append((bookmaker.get("name") or "Bet 365", odds))
 
     if isinstance(data.get("bookmakers"), list):
         for bookmaker in data["bookmakers"]:
             if isinstance(bookmaker, dict):
                 odds = bookmaker.get("odds") or {}
-                if isinstance(odds, dict):
-                    bookmaker_entries.append((bookmaker.get("name") or "Bet 365", odds))
+                if isinstance(odds, dict): bookmaker_entries.append((bookmaker.get("name") or "Bet 365", odds))
 
     if not bookmaker_entries and isinstance(odds_payload.get("odds"), list):
         for bookmaker in odds_payload["odds"]:
-            if isinstance(bookmaker, dict) and isinstance(bookmaker.get("odds"), dict):
-                bookmaker_entries.append((bookmaker.get("name") or "Bet 365", bookmaker["odds"]))
+            if isinstance(bookmaker, dict) and isinstance(bookmaker.get("odds"), dict): bookmaker_entries.append((bookmaker.get("name") or "Bet 365", bookmaker["odds"]))
 
     seen_markets = set()
     for book_name, odds in bookmaker_entries:
@@ -216,7 +213,7 @@ async def get_matches(date=None):
         result = dict(cached[1]); result["cache"] = {"hit": True}; return result
     start, end = _day_window(date)
     try:
-        rows_raw = await _get_all("fixtures", {"start_time": start, "end_time": end, "status": "all", "lang": "en", "per_page": 50, "include": "odds"})
+        rows_raw = await _get_all("fixtures", {"start_time": start, "end_time": end, "status": "all", "lang": "en", "per_page": 100})
     except HTTPException:
         if cached and now_ts - cached[0] < _MATCH_STALE_TTL_SECONDS:
             result = dict(cached[1]); result["cache"] = {"hit": True, "stale": True}; return result
