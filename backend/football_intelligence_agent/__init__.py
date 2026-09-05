@@ -50,19 +50,6 @@ def _is_surprise_request(message: str) -> bool:
     return "surpriz" in _norm(message)
 
 
-def _surprise_reply(rows: list[dict], message: str) -> dict | None:
-    """Market availability must never block a model-only HT/FT intelligence request."""
-    if not (_is_iyms_request(message) and _is_surprise_request(message)):
-        return None
-    if not rows:
-        return None
-    try:
-        analyzed = awaitable = None
-    except Exception:
-        return None
-    return None
-
-
 async def _model_only_iyms_surprises(message: str, rows: list[dict]) -> dict:
     count = num(message)
     candidates = []
@@ -70,7 +57,7 @@ async def _model_only_iyms_surprises(message: str, rows: list[dict]) -> dict:
     # bookmaker market presence is only optional cross-check information.
     for row in rows:
         try:
-            result = await cand(row, track=False)
+            result = await cand(row)
             m = result.get("model") or {}
             probs = (m.get("iyms") or {}).get("probabilities") or {}
             for selection, probability in probs.items():
