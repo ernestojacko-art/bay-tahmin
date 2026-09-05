@@ -15,11 +15,47 @@ _MATCH_STALE_TTL_SECONDS = 6 * 60 * 60
 _FIXTURE_DETAIL_CACHE = {}
 _FIXTURE_DETAIL_TTL_SECONDS = 5 * 60
 
+# Production resilience: successful GET responses are reused across the engine so
+# one page load does not fan out into repeated upstream requests. Concurrent
+# identical requests are coalesced into one upstream call.
+_API_CACHE = {}
+_API_CACHE_TTLS = {
+    "fixtures": 10 * 60,
+    "leagues/": 6 * 60 * 60,
+    "teams/": 6 * 60 * 60,
+    "fixtures/": 5 * 60,
+}
+_INFLIGHT = {}
+_RATE_LIMIT_UNTIL = 0.0
+
 
 def _headers():
     if not KEY:
         raise HTTPException(status_code=500, detail="FIVE_DOLLAR_API_KEY environment variable bulunamadı.")
     return {"Authorization": f"Bearer {KEY}", "Accept": "application/json"}
+
+
+def _cache_ttl(path: str) -> int:
+    if path.startswith("fixtures/") and path.count("/") == 1:
+        return _API_CACHE_TTLS["fixtures/"]
+    if path.startswith("teams/"):
+        return _API_CACHE_TTLS["teams/"]
+    if path.startswith("leagues/"):
+        return _API_CACHE_TTLS["leagues/"]
+    if path == "fixtures":
+        return _API_CACHE_TTLS["fixtures"]
+    return 5 * 60
+
+
+def _cache_key(path: str, params: dict | None):
+    return (path, tuple(sorted((str(k), str(v)) for k, v in (params or {}).items())))
+
+
+def _cached(cache_key):
+    item = _API_CACHE.get(cache_key)
+    if not item:
+        return None
+    return item
 
 
 async def _paced_request(url: str, params: dict):
@@ -28,44 +64,85 @@ async def _paced_request(url: str, params: dict):
 
 
 async def _get(path: str, params: dict | None = None, *, retries: int = 0):
-    last_error = None
-    cache_key = (path, tuple(sorted((params or {}).items())))
-    if path.startswith("fixtures/") and path.count("/") == 1:
-        cached = _FIXTURE_DETAIL_CACHE.get(cache_key)
-        if cached and datetime.now(timezone.utc).timestamp() - cached[0] < _FIXTURE_DETAIL_TTL_SECONDS:
-            return cached[1]
+    global _RATE_LIMIT_UNTIL
+    cache_key = _cache_key(path, params)
+    now = datetime.now(timezone.utc).timestamp()
+    item = _cached(cache_key)
+    ttl = _cache_ttl(path)
+    if item and now - item[0] < ttl:
+        return item[1]
 
-    for attempt in range(retries + 1):
+    # If another coroutine is already fetching exactly this resource, wait for
+    # that result instead of spending another upstream request.
+    existing = _INFLIGHT.get(cache_key)
+    if existing is not None:
+        return await existing
+
+    if now < _RATE_LIMIT_UNTIL:
+        if item:
+            return item[1]
+        raise HTTPException(
+            status_code=503,
+            detail="Canlı veri sağlayıcısı geçici olarak yoğun. Güvenilir olmayan veya uydurma veri göstermek yerine bu isteği güvenli biçimde durdurdum.",
+        )
+
+    async def fetch():
+        global _RATE_LIMIT_UNTIL
+        last_error = None
         try:
-            response = await _paced_request(f"{BASE}/{path.lstrip('/')}", params or {})
-        except httpx.HTTPError as exc:
-            last_error = exc
-            if attempt < retries:
-                await asyncio.sleep(0.5)
-                continue
-            raise HTTPException(status_code=502, detail=f"5DollarFootballAPI bağlantı hatası: {exc}") from exc
+            for attempt in range(retries + 1):
+                try:
+                    response = await _paced_request(f"{BASE}/{path.lstrip('/')}", params or {})
+                except httpx.HTTPError as exc:
+                    last_error = exc
+                    if attempt < retries:
+                        await asyncio.sleep(0.5)
+                        continue
+                    raise HTTPException(status_code=502, detail=f"5DollarFootballAPI bağlantı hatası: {exc}") from exc
 
-        if response.status_code == 429:
-            retry_after = response.headers.get("Retry-After")
-            raise HTTPException(status_code=503, detail=f"5DollarFootballAPI hız sınırı aktif. Retry-After: {retry_after or 'belirsiz'} saniye.")
+                if response.status_code == 429:
+                    retry_after = response.headers.get("Retry-After")
+                    try:
+                        wait = max(1, int(float(retry_after))) if retry_after else 60
+                    except (TypeError, ValueError):
+                        wait = 60
+                    _RATE_LIMIT_UNTIL = max(_RATE_LIMIT_UNTIL, datetime.now(timezone.utc).timestamp() + wait)
+                    stale = _cached(cache_key)
+                    if stale:
+                        return stale[1]
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Canlı veri sağlayıcısı geçici olarak yoğun. Güvenilir olmayan veya uydurma veri göstermek yerine bu isteği güvenli biçimde durdurdum.",
+                    )
 
-        if response.status_code in {500, 502, 503, 504} and attempt < retries:
-            await asyncio.sleep(0.5)
-            continue
+                if response.status_code in {500, 502, 503, 504} and attempt < retries:
+                    await asyncio.sleep(0.5)
+                    continue
 
-        if response.status_code != 200:
-            raise HTTPException(status_code=502, detail=f"5DollarFootballAPI isteği başarısız oldu ({response.status_code}): {response.text[:500]}")
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise HTTPException(status_code=502, detail="5DollarFootballAPI geçerli JSON döndürmedi.") from exc
-        if payload.get("success") != 1:
-            raise HTTPException(status_code=502, detail=f"5DollarFootballAPI hatası: {payload}")
-        if path.startswith("fixtures/") and path.count("/") == 1:
-            _FIXTURE_DETAIL_CACHE[cache_key] = (datetime.now(timezone.utc).timestamp(), payload)
-        return payload
+                if response.status_code != 200:
+                    raise HTTPException(status_code=502, detail=f"5DollarFootballAPI isteği başarısız oldu ({response.status_code}): {response.text[:500]}")
+                try:
+                    payload = response.json()
+                except ValueError as exc:
+                    raise HTTPException(status_code=502, detail="5DollarFootballAPI geçerli JSON döndürmedi.") from exc
+                if payload.get("success") != 1:
+                    raise HTTPException(status_code=502, detail=f"5DollarFootballAPI hatası: {payload}")
 
-    raise HTTPException(status_code=502, detail=f"5DollarFootballAPI bağlantısı başarısız: {last_error}")
+                _API_CACHE[cache_key] = (datetime.now(timezone.utc).timestamp(), payload)
+                if path.startswith("fixtures/") and path.count("/") == 1:
+                    _FIXTURE_DETAIL_CACHE[cache_key] = _API_CACHE[cache_key]
+                return payload
+        finally:
+            _INFLIGHT.pop(cache_key, None)
+
+    task = asyncio.create_task(fetch())
+    _INFLIGHT[cache_key] = task
+    try:
+        return await task
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"5DollarFootballAPI bağlantısı başarısız: {last_error or exc}") from exc
 
 
 async def _get_all(path: str, params: dict | None = None):
