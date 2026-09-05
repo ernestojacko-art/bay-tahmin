@@ -1,8 +1,9 @@
 """BAY TAHMIN prediction consistency and reconciliation layer.
 
 All published prediction families are derived from one probability system when
-sufficient pre-match inputs exist. The layer also refuses to invent HT/FT or
-xG-like values when the required source data is missing.
+sufficient pre-match inputs exist. The layer refuses to present fallback
+proxies as verified xG and refuses to fabricate HT/FT when independent priors
+are unavailable.
 """
 from __future__ import annotations
 
@@ -25,9 +26,17 @@ def _poisson(lam: float, k: int) -> float:
     return math.exp(-lam) * lam**k / math.factorial(k)
 
 
+def _dc_tau(home: float, away: float, h: int, a: int, rho: float = -0.08) -> float:
+    if h == 0 and a == 0: return 1.0 - home * away * rho
+    if h == 0 and a == 1: return 1.0 + home * rho
+    if h == 1 and a == 0: return 1.0 + away * rho
+    if h == 1 and a == 1: return 1.0 - rho
+    return 1.0
+
+
 def _matrix(home: float, away: float, n: int = 8) -> list[list[float]]:
     home, away = max(0.01, home), max(0.01, away)
-    matrix = [[_poisson(home, i) * _poisson(away, j) for j in range(n + 1)] for i in range(n + 1)]
+    matrix = [[max(0.0, _poisson(home, i) * _poisson(away, j) * _dc_tau(home, away, i, j)) for j in range(n + 1)] for i in range(n + 1)]
     total = sum(map(sum, matrix)) or 1.0
     return [[value / total for value in row] for row in matrix]
 
@@ -36,10 +45,8 @@ def _result_probs(matrix: list[list[float]]) -> dict[str, float]:
     home = draw = 0.0
     for i, row in enumerate(matrix):
         for j, probability in enumerate(row):
-            if i > j:
-                home += probability
-            elif i == j:
-                draw += probability
+            if i > j: home += probability
+            elif i == j: draw += probability
     return {"1": home, "X": draw, "2": max(0.0, 1.0 - home - draw)}
 
 
@@ -72,42 +79,46 @@ def _expected_goals(model: dict[str, Any], context: dict[str, Any]) -> tuple[flo
     blocks = []
     for name in ("goal_model", "score_model", "poisson", "score_projection"):
         block = model.get(name)
-        if isinstance(block, dict):
-            blocks.append(block)
+        if isinstance(block, dict): blocks.append(block)
     blocks.append(model)
     for block in blocks:
+        # A provider/model may expose a genuine expected-goal estimate. A known
+        # results-based proxy is deliberately rejected here.
+        if str(block.get("kind") or "").lower() in {"results_based_proxy", "proxy", "fallback"}:
+            continue
         expected = block.get("expected_goals") or block.get("lambda") or block.get("lambdas")
         if isinstance(expected, dict):
             home = _num(expected.get("home")); away = _num(expected.get("away"))
-            if home is not None and away is not None:
-                return home, away
+            if home is not None and away is not None: return home, away
         for hk, ak in (("home_lambda", "away_lambda"), ("lambda_home", "lambda_away"), ("home_xg", "away_xg")):
             home = _num(block.get(hk)); away = _num(block.get(ak))
-            if home is not None and away is not None:
-                return home, away
+            if home is not None and away is not None: return home, away
 
-    # Build a transparent goal prior from pre-match team scoring/conceding form.
-    home = context.get("home") or {}; away = context.get("away") or {}
-    hf = home.get("recent_form") or {}; af = away.get("recent_form") or {}
+    home, away = context.get("home") or {}, context.get("away") or {}
+    hf, af = home.get("recent_form") or {}, away.get("recent_form") or {}
     home_for = _num(hf.get("goals_for_avg")); home_against = _num(hf.get("goals_against_avg"))
     away_for = _num(af.get("goals_for_avg")); away_against = _num(af.get("goals_against_avg"))
-    if all(x is not None for x in (home_for, home_against, away_for, away_against)):
+    home_sample = _num(hf.get("sample")); away_sample = _num(af.get("sample"))
+    if all(x is not None for x in (home_for, home_against, away_for, away_against)) and (home_sample or 0) > 0 and (away_sample or 0) > 0:
         return _avg(home_for, away_against), _avg(away_for, home_against)
 
     league = context.get("league") or {}
-    home = _num(league.get("home_goal_avg")); away = _num(league.get("away_goal_avg"))
-    return (home, away) if home is not None and away is not None else None
+    league_home = _num(league.get("home_goal_avg")); league_away = _num(league.get("away_goal_avg"))
+    if league_home is not None and league_away is not None and ((home_sample or 0) > 0 and (away_sample or 0) > 0):
+        return league_home, league_away
+    return None
 
 
 def _half_lambdas(model: dict[str, Any], context: dict[str, Any], second: bool) -> tuple[float, float] | None:
     key = "second_half_model" if second else "first_half_model"
     block = model.get(key) or {}
     if isinstance(block, dict):
-        expected = block.get("expected_goals")
-        if isinstance(expected, dict):
-            home = _num(expected.get("home")); away = _num(expected.get("away"))
-            if home is not None and away is not None:
-                return home, away
+        source = str(block.get("source") or "").lower()
+        if "fallback" not in source:
+            expected = block.get("expected_goals")
+            if isinstance(expected, dict):
+                home = _num(expected.get("home")); away = _num(expected.get("away"))
+                if home is not None and away is not None: return home, away
 
     half = "second_half" if second else "first_half"
     home_form = _recent_half(context, "home", half)
@@ -116,11 +127,7 @@ def _half_lambdas(model: dict[str, Any], context: dict[str, Any], second: bool) 
     away_for = _num(away_form.get("goals_for_avg")); away_against = _num(away_form.get("goals_against_avg"))
     if all(x is not None for x in (home_for, home_against, away_for, away_against)):
         return _avg(home_for, away_against), _avg(away_for, home_against)
-
-    league = context.get("league") or {}
-    prefix = "second_half" if second else "first_half"
-    home = _num(league.get(f"{prefix}_home_goal_avg")); away = _num(league.get(f"{prefix}_away_goal_avg"))
-    return (home, away) if home is not None and away is not None else None
+    return None
 
 
 def _coverage(context: dict[str, Any]) -> float:
@@ -140,11 +147,8 @@ def reconcile(model: dict[str, Any], context: dict[str, Any] | None = None) -> d
     if goals:
         score_matrix = _matrix(*goals)
         ft = _result_probs(score_matrix)
-        top_i, top_j, top_probability = max(
-            ((i, j, p) for i, row in enumerate(score_matrix) for j, p in enumerate(row)),
-            key=lambda item: item[2],
-        )
-        result["expected_goals"] = {"home": round(goals[0], 3), "away": round(goals[1], 3), "source": "pre-match model/team-form prior"}
+        top_i, top_j, top_probability = max(((i, j, p) for i, row in enumerate(score_matrix) for j, p in enumerate(row)), key=lambda item: item[2])
+        result["goal_expectancy"] = {"home": round(goals[0], 3), "away": round(goals[1], 3), "source": "pre-match model/team-form prior"}
         result["score_distribution"] = {f"{i}-{j}": round(p * 100, 4) for i, row in enumerate(score_matrix) for j, p in enumerate(row) if p >= 0.001}
         result["predicted_score"] = f"{top_i}-{top_j}"
         result["predicted_score_probability"] = round(top_probability * 100, 2)
@@ -155,9 +159,9 @@ def reconcile(model: dict[str, Any], context: dict[str, Any] | None = None) -> d
         result["btts_probabilities"] = {"Var": round(btts_yes * 100, 2), "Yok": round((1 - btts_yes) * 100, 2)}
         result["btts"] = "Var" if btts_yes >= 0.5 else "Yok"
         result["ou_2_5"] = {"Alt": round((1 - over25) * 100, 2), "Üst": round(over25 * 100, 2)}
-        checks.append("Skor dağılımı → MS/BTTS/2.5 Alt-Üst tek kaynaktan türetildi")
+        checks.append("Dixon-Coles skor dağılımı → MS/BTTS/2.5 Alt-Üst tek kaynaktan türetildi")
     else:
-        warnings.append("Güvenilir maç-gol öncülü yok; skor/MS/BTTS/2.5 ortak skor modelinden üretilemedi")
+        warnings.append("Güvenilir maç-gol öncülü yok; skor/MS/BTTS/2.5 ortak skor modeli üretilmedi")
 
     first_half = _half_lambdas(result, context, False)
     second_half = _half_lambdas(result, context, True)
@@ -175,14 +179,12 @@ def reconcile(model: dict[str, Any], context: dict[str, Any] | None = None) -> d
             "source": "independent first-half × independent second-half joint model",
             "surprise_candidates": [{"selection": key, "probability": round(value * 100, 2)} for key, value in sorted(joint.items(), key=lambda item: item[1], reverse=True) if key not in {"1/1", "X/X", "2/2"}][:5],
         }
-        result["htft_model"] = {"independent_first_half": True, "independent_second_half": True, "joint_method": "HT matrix × 2H matrix", "consistency_locked": True}
-        checks.append(f"İY={top_ht}; İY/MS={top_joint}; HT ve HT/MS aynı joint sistemden geliyor")
+        result["htft_model"] = {"independent_first_half": True, "independent_second_half": True, "joint_method": "Dixon-Coles HT matrix × Dixon-Coles 2H matrix", "consistency_locked": True}
+        checks.append(f"İY={top_ht}; İY/MS={top_joint}; HT ve İY/MS aynı joint sistemden geliyor")
     else:
         warnings.append("Bağımsız İY ve 2Y öncülleri birlikte mevcut değil; İY/MS joint tahmini üretilmedi")
 
-    if warnings:
-        result["prediction_warnings"] = list(dict.fromkeys(warnings))
-
+    if warnings: result["prediction_warnings"] = list(dict.fromkeys(warnings))
     coverage = _coverage(context)
     quality = "high" if coverage >= 0.78 else "medium" if coverage >= 0.45 else "low"
     result["data_quality"] = {"level": quality, "coverage": round(coverage * 100, 1), "consistency_validated": True}
@@ -191,10 +193,8 @@ def reconcile(model: dict[str, Any], context: dict[str, Any] | None = None) -> d
 
 
 def install(impl: Any) -> None:
-    """Wrap the active candidate function without rewriting historical engines."""
     original = getattr(impl, "cand", None)
-    if original is None or getattr(original, "_consistency_guard", False):
-        return
+    if original is None or getattr(original, "_consistency_guard", False): return
 
     async def guarded_cand(row: dict[str, Any], **kwargs: Any):
         result = await original(row, **kwargs)
@@ -203,10 +203,6 @@ def install(impl: Any) -> None:
 
     guarded_cand._consistency_guard = True
     impl.cand = guarded_cand
-    v5 = getattr(impl, "v5", None)
-    v4 = getattr(v5, "v4", None)
-    v3 = getattr(v4, "v3", None)
-    v2 = getattr(v3, "v2", None)
+    v5 = getattr(impl, "v5", None); v4 = getattr(v5, "v4", None); v3 = getattr(v4, "v3", None); v2 = getattr(v3, "v2", None)
     for obj in (v3, v2):
-        if obj is not None:
-            obj.cand = guarded_cand
+        if obj is not None: obj.cand = guarded_cand
