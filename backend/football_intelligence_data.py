@@ -113,6 +113,7 @@ def team_form(fixtures, team_id):
     return {'last_5': last5, 'last_10': last10, 'last_20': last20, 'home_split': home, 'away_split': away,
             'sample': last20['sample'], 'points_per_game': weighted('points_per_game'),
             'goals_for_avg': weighted('goals_for_avg'), 'goals_against_avg': weighted('goals_against_avg'),
+            'btts_rate': weighted('btts_rate'), 'over_2_5_rate': weighted('over_2_5_rate'),
             'form': last5['form'], 'weighted': True}
 
 def standings_for_team(standings, team_id, team_name=None):
