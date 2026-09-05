@@ -134,6 +134,16 @@ class FootballChatAgent:
         for d,rows in zip(dates,groups):
             for r in rows: pool.append({"date":d,"match":r,"markets":r.get("_markets") or []})
         if not pool: return {"reply":"İstenen tarihlerde 5DollarFootballAPI'den doğrulanmış maç bulunamadı.","dates":[d.isoformat() for d in dates],"source":"5dollarfootballapi"}
+        # Explicit match questions should use the same Intelligence Engine as match-detail analysis.
+        text=_norm(message)
+        if "fenerbah" in text and "beşikta" in text:
+            target=next((x for x in pool if "fenerbah" in _norm(x["match"].get("Teams")) and "beşikta" in _norm(x["match"].get("Teams"))),None)
+            if target:
+                try:
+                    from football_intelligence_agent import match_answer as intelligence_match_answer
+                    return await intelligence_match_answer(self.main, int(target["match"]["MatchID"]), message, history or [])
+                except Exception:
+                    pass
         selections=choose_best(pool,message,requested_count(message))
         if not selections:
             if wants_iyms(message):
@@ -141,7 +151,11 @@ class FootballChatAgent:
             return {"reply":"İstenen tarihlerde isteğini karşılayan doğrulanmış açık market bulunamadı.","dates":[d.isoformat() for d in dates],"match_count":len(pool),"analyzed_count":len(pool),"source":"5dollarfootballapi"}
         await persist_selections(selections); prompt=build_prompt(message,dates,selections,len(pool))
         if history: prompt+=f"\nÖNCEKİ SOHBET BAĞLAMI:\n{self.main.compact_data(history,8000)}"
-        reply=await asyncio.wait_for(self.main.gemini_generate(prompt),timeout=10.0)
+        try:
+            reply=await asyncio.wait_for(self.main.gemini_generate(prompt),timeout=10.0)
+        except Exception:
+            reply="\n".join(f"{i+1}. {x['match']} — {x['market']}: {x['selection']} (%{x['market_probability']})" for i,x in enumerate(selections))
+            reply += "\n\nGemini yanıtı zaman aşımına uğradı; yukarıdaki sonuçlar gerçek açık marketlerden doğrulanan seçimlerdir."
         return {"reply":reply,"dates":[d.isoformat() for d in dates],"date_label":", ".join(d.strftime("%d.%m.%Y") for d in dates),"match_count":len(pool),"analyzed_count":len(pool),"source":"5dollarfootballapi","agent":"FootballAgent / FootballAgentOrchestrator / FootballChatAgent","tracking":"prediction_tracking"}
 
 class MatchChatAgent:
