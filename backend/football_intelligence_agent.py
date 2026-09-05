@@ -104,7 +104,14 @@ async def answer(main,msg,history=None):
  if not rows:return {'reply':'İstenen tarihlerde doğrulanmış gerçek futbol maçı bulunamadı.','engine':ENGINE,'engine_version':VERSION}
  cs=await asyncio.gather(*(cand(r) for r in rows));sel=choose(cs,msg);data=pack(sel)
  prompt=f'''Sen {ENGINE} sürüm {VERSION} profesyonel futbol istihbarat motorusun. Kullanıcı: {msg}\nDOSSIER:{json.dumps(data,ensure_ascii=False)}\nTahmin ana kaynağı futbol modelidir; piyasa yalnızca çapraz kontroldür. Model Elo, recency-weighted form, takım hücum/savunma gücü, Poisson/Dixon-Coles, Monte Carlo ve ortak İY/MS dağılımını kullanır. Expected goals sonuçlardan türetilmiş proxy'dir. İY/MS doğrudan market yoksa model projeksiyonudur. Verilmeyen bilgiyi uydurma. En güçlü futbol kanıtlarını açıkla, belirsizliği belirt, kupon oluşturma. Türkçe yanıt ver.'''
- return {'reply':await main.gemini_generate(prompt),'engine':ENGINE,'engine_version':VERSION,'dates':[d.isoformat() for d in ds],'match_count':len(rows),'analyzed_count':len(cs),'source':'5DollarFootballAPI + statistical football model'}
+ try:
+  reply=await asyncio.wait_for(main.gemini_generate(prompt),timeout=8.0)
+ except Exception:
+  lines=[]
+  for x in data:
+   lines.append(f"{x['match']} — {x['selection']} (%{round(float(x['probability']),1)})")
+  reply=f"{ENGINE} modeli {len(cs)} maçı analiz etti. En güçlü projeksiyonlar:\n\n" + "\n".join(f"{i+1}. {v}" for i,v in enumerate(lines)) + "\n\nBu sonuçlar istatistiksel futbol modelinden üretilmiştir; piyasa verisi yalnızca çapraz kontroldür."
+ return {'reply':reply,'engine':ENGINE,'engine_version':VERSION,'dates':[d.isoformat() for d in ds],'match_count':len(rows),'analyzed_count':len(cs),'source':'5DollarFootballAPI + statistical football model'}
 async def analyze_match(main,mid):
  p=await five._get(f'fixtures/{int(mid)}',{'lang':'en','include':'events,stats'});f=p.get('data') or {}
  if not f:return {'analysis':{'mac_ozeti':'Maç bulunamadı.'},'engine':ENGINE,'engine_version':VERSION}
@@ -116,7 +123,17 @@ async def analyze_match(main,mid):
 async def match_answer(main,mid,msg,history=None):
  p=await five._get(f'fixtures/{int(mid)}',{'lang':'en','include':'events,stats'});f=p.get('data') or {}
  if not f:return {'reply':'Maç bulunamadı.','engine':ENGINE}
- r=five._fixture_row(f);r['_markets']=five._markets_from_odds({'data':{'odds':f.get('odds') or {}}},live=False);r['_stats']=f.get('statistics') or {};c=await cand(r);k=max(('1','X','2'),key=lambda x:c['model']['probabilities'][x]);data=pack([(c['model']['probabilities'][k],c,k)]);prompt=f'''Sen {ENGINE} maç özel uzmanısın. Kullanıcı: {msg}\nDOSSIER:{json.dumps(data,ensure_ascii=False)}\nGerçek futbol verisi ve istatistiksel modeli kullan. Oranlar sadece çapraz kontroldür. Eksik veriyi uydurma. Türkçe profesyonel yanıt ver; kupon oluşturma.''';return {'reply':await main.gemini_generate(prompt),'match_id':str(mid),'engine':ENGINE,'engine_version':VERSION,'source':'5DollarFootballAPI + statistical football model'}
+ r=five._fixture_row(f);r['_markets']=five._markets_from_odds({'data':{'odds':f.get('odds') or {}}},live=False);r['_stats']=f.get('statistics') or {};c=await cand(r);k=max(('1','X','2'),key=lambda x:c['model']['probabilities'][x]);data=pack([(c['model']['probabilities'][k],c,k)]);prompt=f'''Sen {ENGINE} maç özel uzmanısın. Kullanıcı: {msg}\nDOSSIER:{json.dumps(data,ensure_ascii=False)}\nGerçek futbol verisi ve istatistiksel modeli kullan. Oranlar sadece çapraz kontroldür. Eksik veriyi uydurma. Türkçe profesyonel yanıt ver; kupon oluşturma.''';try:
+  reply=await asyncio.wait_for(main.gemini_generate(prompt),timeout=8.0)
+ except Exception:
+  pr=c['model']['probabilities']; iy=max(c['model']['iyms']['probabilities'],key=c['model']['iyms']['probabilities'].get)
+  reply=(f"{c['match'].get('Teams')} için {ENGINE} özeti:\n"
+         f"• 1: %{pr['1']} | X: %{pr['X']} | 2: %{pr['2']}\n"
+         f"• Beklenen gol proxy: {c['model']['expected_goals']['home']} - {c['model']['expected_goals']['away']}\n"
+         f"• En güçlü İY/MS projeksiyonu: {iy}\n"
+         f"• Model: {c['model']['method']}\n\n"
+         "LLM açıklama servisi zaman aşımına uğradığı için bu yanıt doğrudan Football Intelligence Engine tarafından üretildi.")
+ return {'reply':reply,'match_id':str(mid),'engine':ENGINE,'engine_version':VERSION,'source':'5DollarFootballAPI + statistical football model'}
 def patch_main(main):
  from fastapi import Request,HTTPException
  from fastapi.routing import APIRoute
