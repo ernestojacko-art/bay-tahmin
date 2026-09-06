@@ -44,6 +44,8 @@ def get_active_provider() -> BaseFootballDataProvider:
             "environments. Configure a real ACTIVE_PROVIDER/DATA_PROVIDER for production."
         )
 
+    # The existing 5DollarFootballAPI adapter reads its own API credentials
+    # from the established FIVE_DOLLAR_* environment variables.
     if provider_key in _REAL_SIMPLE_REGISTRY:
         return _REAL_SIMPLE_REGISTRY[provider_key]()
 
