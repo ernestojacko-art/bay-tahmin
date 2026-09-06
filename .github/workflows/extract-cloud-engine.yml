@@ -39,7 +39,7 @@ jobs:
           if [ -f /tmp/cloud-engine/pytest.ini ]; then cp /tmp/cloud-engine/pytest.ini backend/pytest.ini; fi
           if [ -f /tmp/cloud-engine/.env.example ]; then cp /tmp/cloud-engine/.env.example backend/.env.cloud-engine.example; fi
 
-          rm backend/bay-tahmin-cloud-engine-ready.zip
+          rm -f backend/bay-tahmin-cloud-engine-ready.zip
 
       - name: Commit extracted engine
         shell: bash
