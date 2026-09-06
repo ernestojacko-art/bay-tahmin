@@ -151,19 +151,11 @@ class ChatOrchestrator:
             else:
                 prediction = context.latest_analysis
 
+            # Match-specific replies are deliberately kept template-based.
+            # This guarantees that the user sees only Turkish narration of
+            # already-computed Intelligence Engine values and prevents an LLM
+            # from translating the response into mixed Turkish/English text.
             reply = _build_structured_match_reply(message, prediction)
-
-            # Optionally ask the LLM to *rephrase* (never regenerate numbers).
-            if self._llm_client.is_configured:
-                system_prompt = (
-                    "Rewrite the following football match analysis in natural, professional, "
-                    "conversational language, in the same language the underlying text is "
-                    "written in. Do not change, invent, or add any numbers, probabilities, or "
-                    "team names beyond what is given."
-                )
-                llm_text = await self._llm_client.generate(system_prompt, reply)
-                if llm_text:
-                    reply = llm_text
 
             context.previous_intent = "match_analysis"
             context.add_turn("assistant", reply, self._settings.chat_context_max_turns)
