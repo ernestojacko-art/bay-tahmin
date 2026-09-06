@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - cloud-engine-integration-v2
+    paths:
+      - bay-tahmin-cloud-engine-ready.zip
   workflow_dispatch:
 
 permissions:
