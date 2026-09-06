@@ -4,14 +4,13 @@ on:
   push:
     branches:
       - cloud-engine-integration-v2
-    paths:
-      - backend/bay-tahmin-cloud-engine-ready.zip
 
 permissions:
   contents: write
 
 jobs:
   extract:
+    if: github.event.head_commit.message != 'feat: unpack Cloud Football Intelligence Engine [skip ci]'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout branch
