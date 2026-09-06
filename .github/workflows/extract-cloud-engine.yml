@@ -1,0 +1,55 @@
+name: Extract Cloud Engine
+
+on:
+  push:
+    branches:
+      - cloud-engine-integration-v2
+    paths:
+      - backend/bay-tahmin-cloud-engine-ready.zip
+
+permissions:
+  contents: write
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+
+      - name: Extract Cloud Engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f backend/bay-tahmin-cloud-engine-ready.zip
+          rm -rf /tmp/cloud-engine
+          mkdir -p /tmp/cloud-engine
+          unzip -q backend/bay-tahmin-cloud-engine-ready.zip -d /tmp/cloud-engine
+
+          test -d /tmp/cloud-engine/app
+          test -d /tmp/cloud-engine/tests
+          test -f /tmp/cloud-engine/main.py
+          test -f /tmp/cloud-engine/requirements.txt
+
+          rm -rf backend/app backend/tests
+          cp -R /tmp/cloud-engine/app backend/app
+          cp -R /tmp/cloud-engine/tests backend/tests
+          cp /tmp/cloud-engine/main.py backend/main.py
+          cp /tmp/cloud-engine/requirements.txt backend/requirements.txt
+
+          if [ -f /tmp/cloud-engine/pytest.ini ]; then cp /tmp/cloud-engine/pytest.ini backend/pytest.ini; fi
+          if [ -f /tmp/cloud-engine/.env.example ]; then cp /tmp/cloud-engine/.env.example backend/.env.cloud-engine.example; fi
+
+          rm backend/bay-tahmin-cloud-engine-ready.zip
+
+      - name: Commit extracted engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add backend/app backend/tests backend/main.py backend/requirements.txt backend/pytest.ini backend/.env.cloud-engine.example
+          git add -u backend/bay-tahmin-cloud-engine-ready.zip
+          git diff --cached --quiet && exit 0
+          git commit -m "feat: unpack Cloud Football Intelligence Engine [skip ci]"
+          git push origin HEAD:cloud-engine-integration-v2
