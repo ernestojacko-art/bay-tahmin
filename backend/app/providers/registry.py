@@ -18,21 +18,18 @@ from app.providers.rest_football_provider import RestFootballDataProvider
 from app.providers.sample_provider import SampleDataProvider
 from app.providers.five_dollar_provider import FiveDollarFootballProvider
 
-# Providers that require no arguments beyond their own constructor.
 _SIMPLE_REGISTRY: dict[str, type[BaseFootballDataProvider]] = {
     "none": NullProvider,
     "sample-dev-only": SampleDataProvider,
 }
 
-# Providers that need `Settings` injected (e.g. real API credentials/URLs).
-# Add new real-data adapters here as they're implemented -- no other layer
-# of the application needs to change (see app/providers/base.py).
 _SETTINGS_AWARE_REGISTRY = {
     "rest-generic": RestFootballDataProvider,
+}
+
+_REAL_SIMPLE_REGISTRY = {
     "five_dollar_football_api": FiveDollarFootballProvider,
     "5dollarfootballapi": FiveDollarFootballProvider,
-    # "api_football": ApiFootballProvider,             # example: add a real named adapter here
-    # "five_dollar_football_api": FiveDollarProvider,  # example: add another real adapter here
 }
 
 
@@ -47,13 +44,16 @@ def get_active_provider() -> BaseFootballDataProvider:
             "environments. Configure a real ACTIVE_PROVIDER/DATA_PROVIDER for production."
         )
 
+    if provider_key in _REAL_SIMPLE_REGISTRY:
+        return _REAL_SIMPLE_REGISTRY[provider_key]()
+
     if provider_key in _SETTINGS_AWARE_REGISTRY:
         provider_cls = _SETTINGS_AWARE_REGISTRY[provider_key]
         return provider_cls(settings)  # type: ignore[call-arg]
 
     provider_cls = _SIMPLE_REGISTRY.get(provider_key)
     if provider_cls is None:
-        known = list(_SIMPLE_REGISTRY.keys()) + list(_SETTINGS_AWARE_REGISTRY.keys())
+        known = list(_SIMPLE_REGISTRY) + list(_SETTINGS_AWARE_REGISTRY) + list(_REAL_SIMPLE_REGISTRY)
         raise ProviderNotConfiguredError(
             f"Unknown ACTIVE_PROVIDER/DATA_PROVIDER '{settings.active_provider}'. "
             f"Known providers: {known}"
