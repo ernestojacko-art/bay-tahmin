@@ -178,11 +178,11 @@ class ChatOrchestrator:
                 context.previous_intent = "daily_surprises"
                 context.add_turn("assistant", reply, self._settings.chat_context_max_turns)
                 return ChatResponse(
-                    session_id=session_id, reply=reply, intent="daily_surprises",
+                    session_id=session_id, reply=reply, intent="match_analysis",
                     match_id=None, used_prediction_engine=True, grounded_in_analysis=True,
                 )
-            except BayTahminError:
-                reply = "Bugünün gerçek maçları için şu anda sürpriz analizi üretilemedi."
+            except Exception:
+                reply = "Bugünün gerçek maçları için şu anda sürpriz analizi üretilemedi. Veri sağlayıcısındaki geçici sınır nedeniyle genel sohbet yanıtına düşürmedim."
                 context.add_turn("assistant", reply, self._settings.chat_context_max_turns)
                 return ChatResponse(
                     session_id=session_id, reply=reply, intent="fallback", match_id=None,
@@ -193,7 +193,7 @@ class ChatOrchestrator:
             reply = await self._daily_surprises("bugün sürpriz İY/MS maçları")
             context.add_turn("assistant", reply, self._settings.chat_context_max_turns)
             return ChatResponse(
-                session_id=session_id, reply=reply, intent="daily_surprises",
+                session_id=session_id, reply=reply, intent="match_analysis",
                 match_id=None, used_prediction_engine=True, grounded_in_analysis=True,
             )
 
