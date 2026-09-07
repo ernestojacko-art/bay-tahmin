@@ -3,18 +3,14 @@ from __future__ import annotations
 import uuid
 from datetime import date
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.deps import get_analysis_service, get_chat_orchestrator
 from app.main import app as intelligence_app
-from app.schemas.chat import ChatRequest
 
 import five_dollar_bridge as five
 
-# The Cloud Engine is the application of record. These compatibility routes
-# keep the existing Bay Tahmin frontend contract alive while the frontend can
-# continue using the same Render service URL.
 app = intelligence_app
 app.add_middleware(
     CORSMiddleware,
@@ -32,13 +28,11 @@ async def root_compat():
 
 @app.get("/matches", tags=["legacy-compat"])
 async def legacy_matches(date: str | None = None):
-    """Original fixture-list contract backed by the existing 5Dollar bridge."""
     return await five.get_matches(date)
 
 
 @app.get("/mac/{match_id}", tags=["legacy-compat"])
 async def legacy_match_detail(match_id: int):
-    """Original match-detail contract, including live market data."""
     return await five.get_match_detail(match_id)
 
 
@@ -52,16 +46,46 @@ async def legacy_leagues():
     return []
 
 
-@app.get("/ai/analyze/{match_id}", tags=["legacy-compat"])
-async def legacy_ai_analyze(match_id: int):
-    """Compatibility endpoint now powered by the Cloud Intelligence Engine."""
-    service = get_analysis_service()
-    prediction = await service.analyze_match(str(match_id))
+def _legacy_analysis_contract(prediction):
+    """Expose Cloud Engine output both in its native shape and legacy-friendly fields."""
+    data = prediction.model_dump(mode="json")
+    top_scores = sorted(data.get("score_matrix") or [], key=lambda item: item.get("probability", 0), reverse=True)[:5]
+    scenarios = data.get("scenarios") or []
+    surprises = data.get("surprises") or []
+
     return {
-        "analysis": prediction.model_dump(mode="json"),
+        "analysis": data,
+        "prediction": data,
         "source": "BAY_TAHMIN_FOOTBALL_INTELLIGENCE_ENGINE",
         "provider": "5dollarfootballapi",
+        "one_x_two": data.get("one_x_two"),
+        "expected_goals": data.get("expected_goals"),
+        "btts_yes_probability": data.get("btts_yes_probability"),
+        "over_under": data.get("over_under") or [],
+        "half_time_one_x_two": data.get("half_time_one_x_two"),
+        "half_time_full_time": data.get("half_time_full_time"),
+        "score_matrix": data.get("score_matrix") or [],
+        "score_scenarios": top_scores,
+        "scenarios": scenarios,
+        "surprises": surprises,
+        "projections": {
+            "one_x_two": data.get("one_x_two"),
+            "expected_goals": data.get("expected_goals"),
+            "btts_yes_probability": data.get("btts_yes_probability"),
+            "over_under": data.get("over_under") or [],
+            "half_time_one_x_two": data.get("half_time_one_x_two"),
+            "half_time_full_time": data.get("half_time_full_time"),
+        },
+        "confidence": data.get("confidence"),
+        "market_comparison": data.get("market_comparison"),
+        "data_quality": data.get("data_quality"),
     }
+
+
+@app.get("/ai/analyze/{match_id}", tags=["legacy-compat"])
+async def legacy_ai_analyze(match_id: int):
+    prediction = await get_analysis_service().analyze_match(str(match_id))
+    return _legacy_analysis_contract(prediction)
 
 
 @app.post("/matches/{match_id}/chat", tags=["legacy-compat"])
@@ -76,7 +100,3 @@ async def legacy_match_chat(match_id: int, request: Request):
     session_id = str(payload.get("session_id") or f"match-{match_id}")
     result = await get_chat_orchestrator().handle_message(session_id, message, str(match_id))
     return result.model_dump(mode="json")
-
-
-# Also expose the new versioned API under the same Render service:
-# /api/v1/matches, /api/v1/matches/{id}/analysis, /api/v1/chat, etc.
