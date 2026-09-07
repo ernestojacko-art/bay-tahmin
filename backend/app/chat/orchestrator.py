@@ -1,30 +1,4 @@
-"""
-BAY TAHMİN Chat Orchestrator (spec section 3, 12, 13, 22).
-
-    KULLANICI / FRONTEND
-            |
-            v
-    BAY TAHMİN CHAT ORCHESTRATOR
-            |
-    +-------+--------------------+
-    |                            |
-    v                            v
-GENERAL FOOTBALL EXPERT   MATCH / PREDICTION REQUEST
-                                 |
-                                 v
-                     FOOTBALL INTELLIGENCE ENGINE
-                                 |
-                                 v
-                       ANALYSIS + PROJECTIONS
-                                 |
-                                 v
-                     NATURAL LANGUAGE RESPONSE
-
-GOLDEN RULE enforced here: for match/prediction questions, this module
-NEVER invents numbers. It only narrates fields already computed by the
-Prediction Engine (or, when an LLM is configured, asks the LLM to
-*phrase* those already-computed numbers -- never to invent new ones).
-"""
+"""Bay Tahmin maç sohbeti: yalnızca Intelligence Engine verilerini Türkçe anlatır."""
 from __future__ import annotations
 
 import re
@@ -44,57 +18,88 @@ _MATCH_INTENT_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+_RISK_TR = {"low": "düşük", "medium": "orta", "high": "yüksek"}
+_QUALITY_TR = {"low": "düşük", "medium": "orta", "high": "yüksek"}
+
 
 def _looks_like_match_question(message: str) -> bool:
     return bool(_MATCH_INTENT_PATTERNS.search(message))
 
 
+def _risk_tr(value) -> str:
+    raw = getattr(value, "value", str(value)).lower()
+    return _RISK_TR.get(raw, raw)
+
+
+def _quality_tr(value) -> str:
+    raw = getattr(value, "value", str(value)).lower()
+    return _QUALITY_TR.get(raw, raw)
+
+
+def _favorite_label(prediction: MatchPrediction) -> str:
+    ox = prediction.one_x_two
+    values = {
+        prediction.home_team.team_name: ox.home_win,
+        "Beraberlik": ox.draw,
+        prediction.away_team.team_name: ox.away_win,
+    }
+    return max(values, key=values.get)
+
+
 def _narrate_half_time(prediction: MatchPrediction) -> str:
     ht = prediction.half_time_one_x_two
     return (
-        f"İlk yarı olasılıkları -- Ev sahibi önde: %{ht.home_win*100:.1f}, "
-        f"Beraberlik: %{ht.draw*100:.1f}, Deplasman önde: %{ht.away_win*100:.1f}."
+        "İlk yarı değerlendirmem:\n"
+        f"• {prediction.home_team.team_name} ilk yarıyı önde bitirir: %{ht.home_win*100:.1f}\n"
+        f"• İlk yarı beraberliği: %{ht.draw*100:.1f}\n"
+        f"• {prediction.away_team.team_name} ilk yarıyı önde bitirir: %{ht.away_win*100:.1f}"
     )
 
 
 def _narrate_surprises(prediction: MatchPrediction) -> str:
     if not prediction.surprises:
-        return "Bu maç için öne çıkan bir İY/MS sürpriz senaryosu bulunmuyor."
+        return "Bu maç için modelin yeterli güçte bulduğu belirgin bir İY/MS sürpriz senaryosu yok."
     lines = ["Öne çıkan sürpriz İY/MS senaryoları:"]
     for s in prediction.surprises:
         lines.append(
-            f"- {s.combination}: {s.description} (uyum skoru: {s.composite_score:.2f}, "
-            f"risk: {s.risk.value})"
+            f"• {s.combination} — uyum skoru: {s.composite_score:.2f}, risk: {_risk_tr(s.risk)}"
         )
     return "\n".join(lines)
 
 
 def _narrate_confidence(prediction: MatchPrediction) -> str:
     c = prediction.confidence
-    warning_note = ""
-    if c.warnings:
-        warning_note = " Not: " + c.warnings[0]
     return (
-        f"En yüksek olasılıklı sonuca güvenim: %{c.confidence*100:.1f} "
-        f"(risk seviyesi: {c.risk.value}, veri kalitesi: {c.data_quality.value})." + warning_note
+        f"En güçlü tahminime güven düzeyim %{c.confidence*100:.1f}. "
+        f"Risk seviyesi {_risk_tr(c.risk)}, veri kalitesi {_quality_tr(c.data_quality)}."
     )
 
 
 def _narrate_summary(prediction: MatchPrediction) -> str:
     ox = prediction.one_x_two
     eg = prediction.expected_goals
-    fav_scenario = next((s for s in prediction.scenarios if s.scenario_type == "favorite"), None)
+    favorite = _favorite_label(prediction)
+
     lines = [
-        f"1X2 olasılıkları -- Ev: %{ox.home_win*100:.1f}, Beraberlik: %{ox.draw*100:.1f}, "
-        f"Deplasman: %{ox.away_win*100:.1f}.",
-        f"Beklenen gol: {eg.home_xg:.2f} - {eg.away_xg:.2f} (toplam {eg.total_xg:.2f}).",
-        f"KG Var olasılığı: %{prediction.btts_yes_probability*100:.1f}.",
+        f"Bu maç için ana görüşüm: {favorite}.",
+        "",
+        "Tahmin özeti:",
+        f"• Maç sonucu: {prediction.home_team.team_name} %{ox.home_win*100:.1f} | Beraberlik %{ox.draw*100:.1f} | {prediction.away_team.team_name} %{ox.away_win*100:.1f}",
+        f"• En güçlü sonuç eğilimi: {favorite}",
+        f"• Beklenen gol projeksiyonu: {eg.home_xg:.2f} - {eg.away_xg:.2f} (toplam {eg.total_xg:.2f})",
+        f"• Karşılıklı gol olur olasılığı: %{prediction.btts_yes_probability*100:.1f}",
     ]
-    if fav_scenario:
-        lines.append(fav_scenario.description)
+
+    if prediction.scenarios:
+        lines.append("")
+        lines.append("Modelin öne çıkardığı maç senaryosu:")
+        lines.append(f"• En olası senaryo {favorite} sonucunu destekliyor.")
+
+    lines.append("")
     lines.append(_narrate_confidence(prediction))
-    if prediction.disclaimers:
-        lines.append(prediction.disclaimers[0])
+    lines.append(
+        "Bu değerlendirme kesin sonuç garantisi değildir; mevcut gerçek veriler ve istatistiksel modelin ürettiği olasılıklara dayanır."
+    )
     return "\n".join(lines)
 
 
@@ -151,12 +156,7 @@ class ChatOrchestrator:
             else:
                 prediction = context.latest_analysis
 
-            # Match-specific replies are deliberately kept template-based.
-            # This guarantees that the user sees only Turkish narration of
-            # already-computed Intelligence Engine values and prevents an LLM
-            # from translating the response into mixed Turkish/English text.
             reply = _build_structured_match_reply(message, prediction)
-
             context.previous_intent = "match_analysis"
             context.add_turn("assistant", reply, self._settings.chat_context_max_turns)
             return ChatResponse(
@@ -167,31 +167,19 @@ class ChatOrchestrator:
                 used_prediction_engine=True,
                 grounded_in_analysis=True,
             )
-        except MatchNotFoundError as exc:
-            reply = f"Bu maçı bulamadım: {exc}"
+        except MatchNotFoundError:
+            reply = "Bu maçı şu anda gerçek veri sağlayıcısında bulamadım."
             context.add_turn("assistant", reply, self._settings.chat_context_max_turns)
             return ChatResponse(
-                session_id=session_id,
-                reply=reply,
-                intent="fallback",
-                match_id=match_id,
-                used_prediction_engine=False,
-                grounded_in_analysis=False,
+                session_id=session_id, reply=reply, intent="fallback", match_id=match_id,
+                used_prediction_engine=False, grounded_in_analysis=False,
             )
-        except BayTahminError as exc:
-            # Structured fallback per spec section 16 -- never a bare "unreachable" error.
-            reply = (
-                "Bu maç için şu anda tam analiz üretemedim "
-                f"({exc}). Genel bir futbol sohbeti yapabilir ya da başka bir maç deneyebiliriz."
-            )
+        except BayTahminError:
+            reply = "Bu maç için şu anda tam analiz üretilemedi. Lütfen daha sonra tekrar deneyin."
             context.add_turn("assistant", reply, self._settings.chat_context_max_turns)
             return ChatResponse(
-                session_id=session_id,
-                reply=reply,
-                intent="fallback",
-                match_id=match_id,
-                used_prediction_engine=False,
-                grounded_in_analysis=False,
+                session_id=session_id, reply=reply, intent="fallback", match_id=match_id,
+                used_prediction_engine=False, grounded_in_analysis=False,
             )
 
     async def _handle_general_question(
