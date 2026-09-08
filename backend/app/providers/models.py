@@ -41,7 +41,7 @@ class RecentMatch(BaseModel):
     shots_against: Optional[int] = None
     shots_on_target_against: Optional[int] = None
     result: MatchResult
-    opponent_strength_hint: Optional[float] = None  # e.g. opponent's league position/rating
+    opponent_strength_hint: Optional[float] = None
 
 
 class StandingsEntry(BaseModel):
@@ -75,16 +75,17 @@ class Fixture(BaseModel):
     home_team: TeamRef
     away_team: TeamRef
     status: FixtureStatus = FixtureStatus.SCHEDULED
-    round: Optional[str] = None
+    # 5DollarFootballAPI may return this as either text (e.g. "Round 1") or a number.
+    round: Optional[str | int] = None
 
 
 class OddsSelection(BaseModel):
-    label: str  # e.g. "1", "X", "2", "Over 2.5", "BTTS Yes"
-    price: float  # decimal odds
+    label: str
+    price: float
 
 
 class OddsMarket(BaseModel):
-    market_name: str  # e.g. "1X2", "Over/Under 2.5", "BTTS", "HT/FT"
+    market_name: str
     selections: list[OddsSelection]
     bookmaker: Optional[str] = None
     as_of: Optional[datetime] = None
