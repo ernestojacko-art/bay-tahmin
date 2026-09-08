@@ -20,17 +20,32 @@ _MATCH_INTENT_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 _DAILY_SURPRISE_PATTERNS = re.compile(
-    r"(bugün|yarın|günün|yarının).{0,80}(sürpriz|iy/ms|ht/ft).{0,80}(5|beş|maç|öner)|"
-    r"(sürpriz|iy/ms|ht/ft).{0,80}(5|beş).{0,80}(maç|öner)",
+    r"(?:bugün|yarın|günün|yarının).{0,100}(?:sürpriz|iy/ms|ht/ft).{0,100}(?:\d+|bir|iki|üç|dört|beş|altı|yedi|sekiz|dokuz|on).{0,40}(?:maç|karşılaş|öner)|"
+    r"(?:sürpriz|iy/ms|ht/ft).{0,100}(?:\d+|bir|iki|üç|dört|beş|altı|yedi|sekiz|dokuz|on).{0,40}(?:maç|karşılaş|öner)",
     re.IGNORECASE,
 )
 
 _RISK_TR = {"low": "düşük", "medium": "orta", "high": "yüksek"}
 _QUALITY_TR = {"low": "düşük", "medium": "orta", "high": "yüksek"}
+_NUMBER_TR = {
+    "bir": 1, "iki": 2, "üç": 3, "dört": 4, "beş": 5,
+    "altı": 6, "yedi": 7, "sekiz": 8, "dokuz": 9, "on": 10,
+}
 
 
 def _looks_like_match_question(message: str) -> bool:
     return bool(_MATCH_INTENT_PATTERNS.search(message))
+
+
+def _requested_match_count(message: str) -> int:
+    lowered = message.lower()
+    numeric = re.search(r"\b([1-9]|10)\s*(?:maç|karşılaşma|karşılaşma(?:sı)?)", lowered)
+    if numeric:
+        return int(numeric.group(1))
+    for word, value in _NUMBER_TR.items():
+        if re.search(rf"\b{re.escape(word)}\s*(?:maç|karşılaşma|karşılaşma(?:sı)?)", lowered):
+            return value
+    return 5
 
 
 def _looks_like_daily_surprise_request(message: str) -> bool:
@@ -139,6 +154,7 @@ class ChatOrchestrator:
             from datetime import timedelta
             target = target + timedelta(days=1)
 
+        requested_count = _requested_match_count(message)
         provider = self._analysis_service._provider
         fixtures = await provider.get_fixtures(target)
         ranked = []
@@ -153,11 +169,11 @@ class ChatOrchestrator:
             ranked.append((best.composite_score, fixture, prediction, best))
 
         ranked.sort(key=lambda item: item[0], reverse=True)
-        ranked = ranked[:5]
+        ranked = ranked[:requested_count]
         if not ranked:
             return f"{target.isoformat()} için gerçek veriyle yeterli sayıda analiz edilebilir sürpriz İY/MS maçı bulamadım."
 
-        lines = [f"{target.isoformat()} için sürpriz potansiyeli en yüksek İY/MS maçlar:"]
+        lines = [f"{target.isoformat()} için sürpriz potansiyeli en yüksek {len(ranked)} İY/MS maçı:"]
         for index, (_, fixture, prediction, best) in enumerate(ranked, 1):
             lines.append(
                 f"{index}. {fixture.home_team.name} - {fixture.away_team.name}\n"
