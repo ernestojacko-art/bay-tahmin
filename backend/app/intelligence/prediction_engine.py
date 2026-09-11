@@ -33,95 +33,40 @@ class PredictionEngine:
 
     def analyze(self, dataset: MatchRawDataset) -> MatchPrediction:
         settings = self._settings
-
         home_profile = self._team_strength_engine.compute_profile(dataset.home_team_data)
         away_profile = self._team_strength_engine.compute_profile(dataset.away_team_data)
-
         expected_goals = stats.compute_expected_goals(home_profile, away_profile)
-
-        score_matrix = stats.build_score_matrix(
-            expected_goals.home_xg,
-            expected_goals.away_xg,
-            max_goals=settings.poisson_max_goals,
-            rho=settings.dixon_coles_rho,
-        )
+        score_matrix = stats.build_score_matrix(expected_goals.home_xg, expected_goals.away_xg, max_goals=settings.poisson_max_goals, rho=settings.dixon_coles_rho)
         poisson_1x2 = stats.one_x_two_from_matrix(score_matrix)
         elo_1x2 = stats.elo_style_probabilities(home_profile, away_profile)
         form_1x2 = stats.form_based_probabilities(home_profile, away_profile)
-
         ensemble = stats.build_ensemble(settings, poisson_1x2, elo_1x2, form_1x2)
-
         btts = stats.btts_probability(score_matrix)
         over_under = stats.over_under_lines(score_matrix)
-        ht_1x2, htft = stats.half_time_full_time(
-            expected_goals.home_xg,
-            expected_goals.away_xg,
-            max_goals=settings.poisson_max_goals,
-            rho=settings.dixon_coles_rho,
-        )
-
-        scenarios = build_scenarios(
-            ensemble.ensemble_1x2,
-            expected_goals,
-            dataset.fixture.home_team.name,
-            dataset.fixture.away_team.name,
-        )
-
+        double_chance = stats.double_chance_from_1x2(ensemble.ensemble_1x2)
+        draw_no_bet = stats.draw_no_bet_from_1x2(ensemble.ensemble_1x2)
+        asian_handicap = stats.asian_handicap_lines(score_matrix)
+        ht_1x2, htft = stats.half_time_full_time(expected_goals.home_xg, expected_goals.away_xg, max_goals=settings.poisson_max_goals, rho=settings.dixon_coles_rho)
+        scenarios = build_scenarios(ensemble.ensemble_1x2, expected_goals, dataset.fixture.home_team.name, dataset.fixture.away_team.name)
         surprises = rank_surprises(htft, home_profile, away_profile, ensemble.model_agreement)
-
-        # Market Cross-Check runs strictly after the independent prediction exists.
         market_comparison = cross_check(ensemble.ensemble_1x2, dataset.odds_markets)
-
-        sanity_flags = self._sanity_engine.run_all_checks(
-            dataset, home_profile, away_profile, ensemble.ensemble_1x2, market_comparison
-        )
-
-        confidence = build_confidence_report(
-            settings,
-            ensemble.ensemble_1x2,
-            ensemble.model_agreement,
-            home_profile,
-            away_profile,
-            market_comparison,
-            sanity_flags,
-        )
-
+        sanity_flags = self._sanity_engine.run_all_checks(dataset, home_profile, away_profile, ensemble.ensemble_1x2, market_comparison)
+        confidence = build_confidence_report(settings, ensemble.ensemble_1x2, ensemble.model_agreement, home_profile, away_profile, market_comparison, sanity_flags)
         overall_quality = confidence.data_quality
         warnings = list(dataset.missing_fields)
-        disclaimers = [
-            "This analysis is generated from statistical modeling and available data. "
-            "It is not a guaranteed outcome and should not be treated as financial advice.",
-        ]
+        disclaimers = ["This analysis is generated from statistical modeling and available data. It is not a guaranteed outcome and should not be treated as financial advice."]
         if overall_quality in (DataQuality.LOW, DataQuality.INSUFFICIENT):
-            disclaimers.append(
-                "Underlying data for one or both teams is limited; treat this prediction "
-                "as exploratory rather than definitive."
-            )
+            disclaimers.append("Underlying data for one or both teams is limited; treat this prediction as exploratory rather than definitive.")
         if SanityContradictionEngine.has_critical_flags(sanity_flags):
-            disclaimers.append(
-                "Critical data-consistency issues were detected -- this result requires "
-                "manual review before being treated as reliable."
-            )
-
+            disclaimers.append("Critical data-consistency issues were detected -- this result requires manual review before being treated as reliable.")
         return MatchPrediction(
-            match_id=dataset.fixture.match_id,
-            generated_at=datetime.now(timezone.utc),
-            home_team=home_profile,
-            away_team=away_profile,
-            one_x_two=ensemble.ensemble_1x2,
-            expected_goals=expected_goals,
+            match_id=dataset.fixture.match_id, generated_at=datetime.now(timezone.utc),
+            home_team=home_profile, away_team=away_profile, one_x_two=ensemble.ensemble_1x2,
+            double_chance=double_chance, draw_no_bet=draw_no_bet, expected_goals=expected_goals,
             score_matrix=[s for s in score_matrix if s.probability >= 0.001],
-            btts_yes_probability=btts,
-            over_under=over_under,
-            half_time_one_x_two=ht_1x2,
-            half_time_full_time=htft,
-            scenarios=scenarios,
-            surprises=surprises,
-            model_contributions=ensemble.contributions,
-            confidence=confidence,
-            sanity_flags=sanity_flags,
-            market_comparison=market_comparison,
-            data_quality=overall_quality,
-            warnings=warnings,
-            disclaimers=disclaimers,
+            btts_yes_probability=btts, over_under=over_under, asian_handicap=asian_handicap,
+            half_time_one_x_two=ht_1x2, half_time_full_time=htft, scenarios=scenarios,
+            surprises=surprises, model_contributions=ensemble.contributions, confidence=confidence,
+            sanity_flags=sanity_flags, market_comparison=market_comparison, data_quality=overall_quality,
+            warnings=warnings, disclaimers=disclaimers,
         )

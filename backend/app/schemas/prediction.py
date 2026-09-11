@@ -15,6 +15,26 @@ class OneXTwoProbabilities(BaseModel):
     away_win: float
 
 
+class DoubleChance(BaseModel):
+    """1X2'den türetilmiş çifte şans pazarı — yeni veri gerektirmez."""
+    home_or_draw: float
+    draw_or_away: float
+    home_or_away: float
+
+
+class DrawNoBet(BaseModel):
+    """Beraberlik olasılığı çıkarılıp ev/deplasman arasında yeniden normalize edilmiş pazar."""
+    home: float
+    away: float
+
+
+class AsianHandicapLine(BaseModel):
+    line: float
+    home_cover: float
+    away_cover: float
+    push: float = 0.0
+
+
 class ScoreProbability(BaseModel):
     home_goals: int
     away_goals: int
@@ -28,8 +48,6 @@ class OverUnderLine(BaseModel):
 
 
 class HalfTimeFullTimeProbabilities(BaseModel):
-    """3x3 HT/FT joint probability matrix, keyed as e.g. '1/1', 'X/2'."""
-
     matrix: dict[str, float]
 
 
@@ -46,17 +64,17 @@ class ModelContribution(BaseModel):
 
 
 class MatchScenario(BaseModel):
-    scenario_type: str  # "favorite" | "balanced" | "upset"
+    scenario_type: str
     label: str
     description: str
     probability: float
     expected_goals: ExpectedGoals
-    tempo: str  # "low-scoring" | "balanced" | "high-scoring"
+    tempo: str
 
 
 class SanityFlag(BaseModel):
     code: str
-    severity: str  # "info" | "warning" | "critical"
+    severity: str
     message: str
 
 
@@ -79,7 +97,7 @@ class MarketComparison(BaseModel):
 
 
 class SurpriseCandidate(BaseModel):
-    combination: str  # e.g. "X/2"
+    combination: str
     description: str
     plausibility: float
     upset_potential: float
@@ -94,26 +112,24 @@ class SurpriseCandidate(BaseModel):
 class MatchPrediction(BaseModel):
     match_id: str
     generated_at: datetime
-
     home_team: TeamStrengthProfile
     away_team: TeamStrengthProfile
-
     one_x_two: OneXTwoProbabilities
+    double_chance: DoubleChance
+    draw_no_bet: DrawNoBet
     expected_goals: ExpectedGoals
     score_matrix: list[ScoreProbability]
     btts_yes_probability: float
     over_under: list[OverUnderLine]
+    asian_handicap: list[AsianHandicapLine]
     half_time_one_x_two: OneXTwoProbabilities
     half_time_full_time: HalfTimeFullTimeProbabilities
-
     scenarios: list[MatchScenario]
     surprises: list[SurpriseCandidate]
-
     model_contributions: list[ModelContribution]
     confidence: ConfidenceReport
     sanity_flags: list[SanityFlag]
     market_comparison: MarketComparison
-
     data_quality: DataQuality
     warnings: list[str] = []
     disclaimers: list[str] = []
