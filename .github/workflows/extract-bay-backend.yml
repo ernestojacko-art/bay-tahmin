@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - main
-    paths:
-      - bay-tahmin-backend-fixes.zip
   workflow_dispatch:
 
 permissions:
@@ -18,7 +16,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Extract fixed backend ZIP without modifying its contents
         shell: bash
         run: |
@@ -36,7 +33,6 @@ jobs:
           fi
           cp -a "$src"/. .
           rm -f bay-tahmin-backend-fixes.zip
-
       - name: Remove temporary workflow and commit extracted files
         shell: bash
         run: |
