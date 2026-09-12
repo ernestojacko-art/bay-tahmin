@@ -76,7 +76,8 @@ class PredictionEngine:
         market_comparison = cross_check(ensemble.ensemble_1x2, dataset.odds_markets)
 
         surprises = rank_surprises(
-            htft, ensemble.ensemble_1x2, home_profile, away_profile, ensemble.model_agreement, market_comparison
+            htft, ensemble.ensemble_1x2, home_profile, away_profile, ensemble.model_agreement,
+            market_comparison, dataset.odds_markets
         )
 
         sanity_flags = self._sanity_engine.run_all_checks(

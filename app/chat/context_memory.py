@@ -34,6 +34,7 @@ class MatchContext:
     latest_analysis: Optional[MatchPrediction] = None
     previous_intent: Optional[str] = None
     last_surprise_query: Optional[str] = None
+    last_surprise_match_ids: list[str] = field(default_factory=list)
     selected_scenario: Optional[str] = None
     selected_prediction_field: Optional[str] = None
     recent_turns: list[ConversationTurn] = field(default_factory=list)

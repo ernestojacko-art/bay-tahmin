@@ -74,14 +74,27 @@ def rank_surprises(
     away_profile: TeamStrengthProfile,
     model_agreement: float,
     market_comparison: MarketComparison,
+    odds_markets: list,
     top_n: int = 3,
 ) -> list[SurpriseCandidate]:
-    # No open betting market -> no "market disagreement" can be measured,
-    # so this fixture cannot be ranked as a surprise (spec section 20/27:
-    # never present a claim the data cannot support). The match's normal
-    # prediction/analysis remains available elsewhere; it simply will not
-    # appear in surprise rankings.
+    # No open FT (1X2) betting market -> no "market disagreement" can be
+    # measured, so this fixture cannot be ranked as a surprise (spec section
+    # 20/27: never present a claim the data cannot support). The match's
+    # normal prediction/analysis remains available elsewhere; it simply
+    # will not appear in surprise rankings.
     if not market_comparison.market_available or market_comparison.market_implied is None:
+        return []
+
+    # İY/MS (HT/FT) is a COMBINED market that 5DollarFootballAPI does not
+    # expose as its own line item -- it only ever provides a separate
+    # "İlk Yarı Maç Sonucu" (half-time-only 1X2) market alongside the
+    # full-time one. An HT/FT surprise claim therefore additionally
+    # requires that a real half-time market exists for this fixture;
+    # otherwise there is genuinely no market-side signal for the
+    # half-time leg of the combination at all, and presenting a confident
+    # İY/MS pick would not be grounded in anything real (spec section 18:
+    # never fabricate a market that doesn't exist for this fixture).
+    if not any("i̇lk yarı maç sonucu" in (m.market_name or "").lower() or "ilk yarı maç sonucu" in (m.market_name or "").lower() for m in odds_markets):
         return []
 
     weights = _Weights()

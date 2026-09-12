@@ -98,7 +98,8 @@ _TOP_EUROPEAN_LEAGUE_HINTS = (
 _EUROPEAN_LEAGUE_REQUEST_PATTERN = re.compile(r"avrupa|üst lig|büyük lig|top lig", re.IGNORECASE)
 
 _SURPRISE_CONTINUATION_PATTERN = re.compile(
-    r"hangi maç|hangileri|hangi karşılaş|başka|farklı|diğer|değiştir|filtrele",
+    r"hangi maç|hangileri|hangi karşılaş|başka|farklı|diğer|değiştir|filtrele|"
+    r"daha|tekrar|yine|\d+\s*(tane\s*)?maç|kaç tane|eksik",
     re.IGNORECASE,
 )
 
@@ -240,7 +241,7 @@ class ChatOrchestrator:
         self._llm_client = llm_client
         self._context_store = context_store
 
-    async def _daily_surprises(self, message: str) -> str:
+    async def _daily_surprises(self, message: str, exclude_match_ids: frozenset[str] = frozenset()) -> tuple[str, list[str]]:
         target = _target_date_from_message(message)
         evening = _is_evening_request(message)
         european_only = _wants_european_leagues(message)
@@ -252,6 +253,9 @@ class ChatOrchestrator:
             fixtures = _within_evening_window(fixtures, target)
         if european_only:
             fixtures = [f for f in fixtures if _is_top_european_league(f)]
+        already_shown = [f for f in fixtures if f.match_id in exclude_match_ids]
+        if exclude_match_ids:
+            fixtures = [f for f in fixtures if f.match_id not in exclude_match_ids]
 
         ranked = []
         for fixture in fixtures:
@@ -269,19 +273,28 @@ class ChatOrchestrator:
         if not ranked:
             window_note = " (17:00-23:59 aralığında)" if evening else ""
             league_note = ", sadece üst düzey Avrupa liglerinde" if european_only else ""
+            already_note = (
+                f" Daha önce gösterdiğim {len(already_shown)} maç dışında,"
+                if exclude_match_ids and already_shown else ""
+            )
             return (
+                f"{target.isoformat()}{window_note}{league_note} için,{already_note} piyasası açık ve yeterli "
+                "veri kalitesine sahip başka bir gerçek sürpriz İY/MS adayı bulamadım. Elimdeki tüm kaliteli "
+                "adayları zaten paylaştım."
+                if exclude_match_ids else
                 f"{target.isoformat()}{window_note}{league_note} için, piyasası açık ve yeterli veri kalitesine sahip "
                 "gerçek bir sürpriz İY/MS adayı bulamadım. Bu, o saatlerdeki maçların çoğunda bahis "
                 "piyasasının henüz açılmamış olmasından ya da veri örnekleminin yetersiz kalmasından "
                 "kaynaklanabilir."
-            )
+            ), []
 
         league_label = " üst düzey Avrupa liglerinden" if european_only else ""
-        lines = [f"{target.isoformat()} için{league_label} sürpriz potansiyeli en yüksek İY/MS maçlar:"]
+        header_prefix = "Daha önce gösterdiklerim dışında, " if exclude_match_ids else ""
+        lines = [f"{header_prefix}{target.isoformat()} için{league_label} sürpriz potansiyeli en yüksek İY/MS maçlar:"]
         if len(ranked) < 5:
             lines[0] = (
-                f"{target.isoformat()} için{league_label}, piyasası açık ve yeterli veri kalitesine sahip yalnızca "
-                f"{len(ranked)} güçlü sürpriz adayı bulundu:"
+                f"{header_prefix}{target.isoformat()} için{league_label}, piyasası açık ve yeterli veri kalitesine "
+                f"sahip yalnızca {len(ranked)} güçlü sürpriz adayı bulundu:"
             )
         for index, (_, fixture, prediction, best) in enumerate(ranked, 1):
             kickoff_local = fixture.kickoff.astimezone(ISTANBUL).strftime("%H:%M")
@@ -296,7 +309,8 @@ class ChatOrchestrator:
             "açık gerçek maçların Cloud Intelligence Engine tarafından analiz edilip gerçek piyasa "
             "olasılıklarıyla karşılaştırılmasıyla oluşturuldu."
         )
-        return "\n".join(lines)
+        shown_ids = [fixture.match_id for (_, fixture, _, _) in ranked]
+        return "\n".join(lines), shown_ids
 
     async def _list_matches(self, message: str) -> str:
         """§5 TODAY_MATCHES/EVENING_MATCHES: sürpriz analizi gerektirmeyen düz fikstür listesi.
@@ -360,9 +374,10 @@ class ChatOrchestrator:
 
         if _looks_like_daily_surprise_request(message):
             try:
-                reply = await self._daily_surprises(message)
+                reply, shown_ids = await self._daily_surprises(message)
                 context.previous_intent = "daily_surprises"
                 context.last_surprise_query = message
+                context.last_surprise_match_ids = shown_ids
                 context.add_turn("assistant", reply, self._settings.chat_context_max_turns)
                 return ChatResponse(
                     session_id=session_id, reply=reply, intent="match_analysis",
@@ -377,14 +392,13 @@ class ChatOrchestrator:
                 )
 
         # Sürpriz/fikstür listesi üzerine gelen doğal devam mesajları ("başka
-        # üst liglerden ver", "farklı maçlar var mı", "Avrupa liglerinden
-        # ver" gibi) sürpriz/maç anahtar kelimesi içermeyebilir; bu yüzden
-        # yukarıdaki desenle yakalanamaz. Önceki niyet hâlâ sürpriz/fikstür
-        # listesiyse VE mesaj belirli bir maçtan bahsetmiyorsa, arayüzden
-        # gelen (ve o an ekranda açık olan alakasız bir maça ait olabilecek)
-        # match_id'yi görmezden gelip önceki sorguyu yeni mesajla birleştirip
-        # tekrar çalıştırıyoruz -- böylece "yarın" gibi tarih bilgisi de
-        # korunur, sadece yeni filtre (örn. "Avrupa") eklenir.
+        # üst liglerden ver", "3 maç daha ver", "farklı maçlar var mı" gibi)
+        # sürpriz/maç anahtar kelimesi içermeyebilir; bu yüzden yukarıdaki
+        # desenle yakalanamaz. Önceki niyet hâlâ sürpriz/fikstür listesiyse
+        # VE mesaj belirli bir maçtan bahsetmiyorsa, arayüzden gelen (ve o an
+        # ekranda açık olan alakasız bir maça ait olabilecek) match_id'yi
+        # görmezden gelip önceki sorguyu yeni mesajla birleştirip, daha önce
+        # gösterilen maçları hariç tutarak tekrar çalıştırıyoruz.
         if (
             context.previous_intent in ("daily_surprises", "fixture_list")
             and not _looks_like_match_question(message)
@@ -396,9 +410,12 @@ class ChatOrchestrator:
             ):
                 combined_query = f"{context.last_surprise_query or ''} {message}".strip()
                 try:
-                    reply = await self._daily_surprises(combined_query)
+                    reply, shown_ids = await self._daily_surprises(
+                        combined_query, exclude_match_ids=frozenset(context.last_surprise_match_ids)
+                    )
                     context.previous_intent = "daily_surprises"
                     context.last_surprise_query = combined_query
+                    context.last_surprise_match_ids = context.last_surprise_match_ids + shown_ids
                     context.add_turn("assistant", reply, self._settings.chat_context_max_turns)
                     return ChatResponse(
                         session_id=session_id, reply=reply, intent="match_analysis",
