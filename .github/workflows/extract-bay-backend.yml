@@ -1,0 +1,51 @@
+name: Extract Bay Tahmin Backend ZIP
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  extract:
+    if: "!contains(github.event.head_commit.message, '[backend-extract]')"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract ZIP without modifying archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="bay-tahmin-backend-fixes.zip"
+          test -f "$ZIP"
+          rm -rf /tmp/bay-extract
+          mkdir -p /tmp/bay-extract
+          unzip -q -o "$ZIP" -d /tmp/bay-extract
+
+          mapfile -t TOP < <(find /tmp/bay-extract -mindepth 1 -maxdepth 1 -printf '%f\n')
+          if [ "${#TOP[@]}" -eq 1 ] && [ -d "/tmp/bay-extract/${TOP[0]}" ]; then
+            cp -a "/tmp/bay-extract/${TOP[0]}/." .
+          else
+            cp -a /tmp/bay-extract/. .
+          fi
+
+      - name: Commit extracted files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          rm -f .github/workflows/extract-bay-backend.yml
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No extracted changes to commit."
+            exit 0
+          fi
+          git commit -m "chore: apply bay tahmin backend fixes [backend-extract]"
+          git push
