@@ -31,16 +31,18 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
         self._cache: dict[tuple[str, tuple[tuple[str, str], ...]], tuple[float, Any]] = {}
         self._inflight: dict[tuple[str, tuple[tuple[str, str], ...]], asyncio.Task] = {}
         self._league_cache: dict[tuple[str, str], list[dict[str, Any]]] = {}
-        self._fixture_cache: dict[str, Fixture] = {}
+        # Fixture state is volatile around kickoff.  Keep it separately from
+        # historical/statistical caches and never reuse it for long.
+        self._fixture_cache: dict[str, tuple[float, Fixture]] = {}
 
     def _key_for(self, path: str, params: Optional[dict[str, Any]]) -> tuple[str, tuple[tuple[str, str], ...]]:
         return path, tuple(sorted((str(k), str(v)) for k, v in (params or {}).items()))
 
     def _ttl(self, path: str) -> int:
-        if path == "fixtures": return 600
+        if path == "fixtures": return 45
         if path.startswith("leagues/"): return 21600
         if path.startswith("teams/"): return 21600
-        if path.startswith("fixtures/"): return 300
+        if path.startswith("fixtures/"): return 45
         return 300
 
     async def _request(self, path: str, params: Optional[dict[str, Any]] = None, retries: int = 2) -> Any:
@@ -106,9 +108,13 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
     @staticmethod
     def _status(value: Any) -> FixtureStatus:
         v = str(value or "").lower()
+        if v in {"not_started", "not started", "ns"}: return FixtureStatus.NOT_STARTED
+        if v in {"timed", "time"}: return FixtureStatus.TIMED
         if v in {"live", "inplay", "in_play"}: return FixtureStatus.LIVE
+        if v in {"half_time", "half time", "ht", "break"}: return FixtureStatus.HALF_TIME
         if v in {"finished", "ft", "aet", "pen"}: return FixtureStatus.FINISHED
-        if v in {"postponed", "canceled", "cancelled", "abandoned"}: return FixtureStatus.POSTPONED
+        if v in {"canceled", "cancelled"}: return FixtureStatus.CANCELLED
+        if v in {"postponed", "abandoned"}: return FixtureStatus.POSTPONED
         return FixtureStatus.SCHEDULED
 
     @classmethod
@@ -119,11 +125,21 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
         if not kickoff_raw: raise ProviderError("Fixture missing kickoff_utc")
         try: kickoff = datetime.fromisoformat(str(kickoff_raw).replace("Z", "+00:00"))
         except ValueError as exc: raise ProviderError(f"Invalid kickoff: {kickoff_raw}") from exc
+        # A field explicitly labelled UTC is safe to normalize only when the
+        # vendor omitted the offset.  A generic, naive `kickoff` is ambiguous
+        # and must not be silently treated as Istanbul or UTC.
+        if kickoff.tzinfo is None:
+            if raw.get("kickoff_utc"):
+                kickoff = kickoff.replace(tzinfo=timezone.utc)
+            else:
+                raise ProviderError("Fixture kickoff has no timezone offset")
+        if not raw.get("id") or not home.get("id") or not away.get("id") or not home.get("name") or not away.get("name"):
+            raise ProviderError("Fixture is missing an ID or team identity")
         lid = str(league.get("id") or "")
         return Fixture(
             match_id=str(raw.get("id")), league_id=lid, league_name=league.get("name"), kickoff=kickoff,
-            home_team=TeamRef(team_id=str(home.get("id")), name=str(home.get("name") or "Unknown"), league_id=lid or None),
-            away_team=TeamRef(team_id=str(away.get("id")), name=str(away.get("name") or "Unknown"), league_id=lid or None),
+            home_team=TeamRef(team_id=str(home["id"]), name=str(home["name"]), league_id=lid or None),
+            away_team=TeamRef(team_id=str(away["id"]), name=str(away["name"]), league_id=lid or None),
             status=cls._status(raw.get("status")), round=raw.get("round"),
         )
 
@@ -135,15 +151,17 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
         out=[]
         for raw in rows:
             if league_id and str((raw.get("league") or {}).get("id")) != str(league_id): continue
-            f=self._fixture(raw); self._fixture_cache[f.match_id]=f; out.append(f)
+            f=self._fixture(raw); self._fixture_cache[f.match_id]=(datetime.now(timezone.utc).timestamp(), f); out.append(f)
         return out
 
     async def get_fixture(self, match_id: str) -> Optional[Fixture]:
-        if str(match_id) in self._fixture_cache: return self._fixture_cache[str(match_id)]
+        cached = self._fixture_cache.get(str(match_id))
+        if cached and datetime.now(timezone.utc).timestamp() - cached[0] < 45:
+            return cached[1]
         payload=await self._request(f"fixtures/{match_id}", {"lang":"en"})
         raw=payload.get("data") or {}
         if not raw: return None
-        f=self._fixture(raw); self._fixture_cache[f.match_id]=f; return f
+        f=self._fixture(raw); self._fixture_cache[f.match_id]=(datetime.now(timezone.utc).timestamp(), f); return f
 
     async def _league_rows(self, league_id: str, target: date) -> list[dict[str, Any]]:
         key=(str(league_id),target.isoformat())
@@ -184,7 +202,7 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
         return None
 
     async def get_team_dataset(self, team_id: str, league_id: Optional[str] = None) -> TeamRawDataset:
-        fixture=next((f for f in self._fixture_cache.values() if f.home_team.team_id==str(team_id) or f.away_team.team_id==str(team_id)),None)
+        fixture=next((cached[1] for cached in self._fixture_cache.values() if cached[1].home_team.team_id==str(team_id) or cached[1].away_team.team_id==str(team_id)),None)
         league_id=league_id or (fixture.league_id if fixture else None)
         if not league_id: raise ProviderError(f"League ID unavailable for team {team_id}")
         target=fixture.kickoff.date() if fixture else datetime.now(ZoneInfo("Europe/Istanbul")).date()
@@ -212,7 +230,7 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
         return sorted([s for tm in teams.values() if (s:=self._standings(tm,rows))],key=lambda x:x.position)
 
     async def get_h2h(self, team_a_id: str, team_b_id: str, limit: int = 10) -> Optional[H2HRecord]:
-        fixture=next((f for f in self._fixture_cache.values() if f.home_team.team_id==str(team_a_id) or f.away_team.team_id==str(team_a_id)),None)
+        fixture=next((cached[1] for cached in self._fixture_cache.values() if cached[1].home_team.team_id==str(team_a_id) or cached[1].away_team.team_id==str(team_a_id)),None)
         if not fixture: return None
         rows=await self._league_rows(fixture.league_id,fixture.kickoff.date()); out=[]
         for r in self._finished(rows):

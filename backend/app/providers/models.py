@@ -61,10 +61,14 @@ class H2HRecord(BaseModel):
 
 
 class FixtureStatus(str, Enum):
+    NOT_STARTED = "not_started"
     SCHEDULED = "scheduled"
+    TIMED = "timed"
     LIVE = "live"
+    HALF_TIME = "half_time"
     FINISHED = "finished"
     POSTPONED = "postponed"
+    CANCELLED = "cancelled"
 
 
 class Fixture(BaseModel):
