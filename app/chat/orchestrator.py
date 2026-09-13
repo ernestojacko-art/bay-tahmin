@@ -257,6 +257,14 @@ class ChatOrchestrator:
         if exclude_match_ids:
             fixtures = [f for f in fixtures if f.match_id not in exclude_match_ids]
 
+        # Her aday maç, iki takımın da yıllık lig geçmişini çekmeyi gerektiriyor
+        # (form/H2H için). Filtrelenmemiş bir günde onlarca farklı ligden yüzlerce
+        # maç olabilir -- hepsini sırayla analiz etmeye çalışmak 5DollarFootballAPI'yi
+        # rate-limit'e (429) sokuyor ve rastgele/eksik sonuçlara yol açıyor. Adayları
+        # makul bir üst sınırla kısıtlıyoruz.
+        MAX_CANDIDATES = 40
+        fixtures = fixtures[:MAX_CANDIDATES]
+
         ranked = []
         for fixture in fixtures:
             try:
@@ -305,7 +313,7 @@ class ChatOrchestrator:
             )
         lines.append("")
         lines.append(
-            "Bu liste yalnızca 5DollarFootballAPI üzerinden bulunan, henüz başlamamış ve piyasası "
+            "[TANI-v3] Bu liste yalnızca 5DollarFootballAPI üzerinden bulunan, henüz başlamamış ve piyasası "
             "açık gerçek maçların Cloud Intelligence Engine tarafından analiz edilip gerçek piyasa "
             "olasılıklarıyla karşılaştırılmasıyla oluşturuldu."
         )
