@@ -10,18 +10,19 @@ from app.providers.base import BaseFootballDataProvider
 from app.schemas.match import MatchSummary, TeamSummary
 from app.schemas.prediction import MatchPrediction
 from app.services.analysis_service import AnalysisService
+from app.services.fixture_selection import istanbul_today, select_upcoming
 
 router = APIRouter(tags=["matches"])
 
 
 @router.get("/matches", response_model=list[MatchSummary])
 async def list_matches(
-    match_date: date = Query(default_factory=date.today, alias="date"),
+    match_date: date = Query(default_factory=istanbul_today, alias="date"),
     league_id: str | None = Query(default=None),
     provider: BaseFootballDataProvider = Depends(get_provider),
 ) -> list[MatchSummary]:
     try:
-        fixtures = await provider.get_fixtures(match_date, league_id)
+        fixtures = select_upcoming(await provider.get_fixtures(match_date, league_id), target_date=match_date)
     except BayTahminError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

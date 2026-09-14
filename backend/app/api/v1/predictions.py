@@ -9,20 +9,21 @@ from app.core.exceptions import BayTahminError
 from app.providers.base import BaseFootballDataProvider
 from app.schemas.prediction import MatchPrediction, SurpriseCandidate
 from app.services.analysis_service import AnalysisService
+from app.services.fixture_selection import istanbul_today, select_upcoming
 
 router = APIRouter(tags=["predictions"])
 
 
 @router.get("/predictions", response_model=list[MatchPrediction])
 async def list_predictions(
-    match_date: date = Query(default_factory=date.today, alias="date"),
+    match_date: date = Query(default_factory=istanbul_today, alias="date"),
     league_id: str | None = Query(default=None),
     provider: BaseFootballDataProvider = Depends(get_provider),
     service: AnalysisService = Depends(get_analysis_service),
 ) -> list[MatchPrediction]:
     """Analyze every real fixture on the requested date."""
     try:
-        fixtures = await provider.get_fixtures(match_date, league_id)
+        fixtures = select_upcoming(await provider.get_fixtures(match_date, league_id), target_date=match_date)
     except BayTahminError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -37,7 +38,7 @@ async def list_predictions(
 
 @router.get("/daily-surprises")
 async def daily_surprises(
-    match_date: date = Query(default_factory=date.today, alias="date"),
+    match_date: date = Query(default_factory=istanbul_today, alias="date"),
     limit: int = Query(default=5, ge=1, le=20),
     league_id: str | None = Query(default=None),
     provider: BaseFootballDataProvider = Depends(get_provider),
@@ -45,7 +46,7 @@ async def daily_surprises(
 ):
     """Rank real fixtures by their strongest Cloud Engine HT/FT surprise scenario."""
     try:
-        fixtures = await provider.get_fixtures(match_date, league_id)
+        fixtures = select_upcoming(await provider.get_fixtures(match_date, league_id), target_date=match_date)
     except BayTahminError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

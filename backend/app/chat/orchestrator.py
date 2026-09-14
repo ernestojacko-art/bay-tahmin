@@ -14,8 +14,8 @@ from app.providers.models import Fixture, FixtureStatus
 from app.schemas.chat import ChatResponse
 from app.schemas.prediction import MatchPrediction
 from app.services.analysis_service import AnalysisService
+from app.services.fixture_selection import ISTANBUL, is_upcoming_scheduled, select_upcoming
 
-ISTANBUL = ZoneInfo("Europe/Istanbul")
 
 _MATCH_INTENT_PATTERNS = re.compile(
     r"ilk yarı|iy/ms|ht/ft|sürpriz|güven|1x2|olasılık|skor|kaç kaç|"
@@ -24,7 +24,7 @@ _MATCH_INTENT_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 _DAILY_SURPRISE_PATTERNS = re.compile(
-    r"(bugün|yarın|günün|yarının).{0,80}(sürpriz|iy/ms|ht/ft).{0,80}(5|beş|maç|öner)|"
+    r"(bugün|bu akşam|bu gece|yarın|yarın akşam|günün|yarının).{0,80}(sürpriz|iy/ms|ht/ft).{0,80}(5|beş|maç|öner)|"
     r"(sürpriz|iy/ms|ht/ft).{0,80}(5|beş).{0,80}(maç|öner)",
     re.IGNORECASE,
 )
@@ -62,17 +62,11 @@ def _is_evening_request(message: str) -> bool:
 
 
 def _future_scheduled_fixtures(fixtures: list[Fixture]) -> list[Fixture]:
-    now_utc = datetime.now(timezone.utc)
-    return [
-        f for f in fixtures
-        if f.status == FixtureStatus.SCHEDULED and f.kickoff > now_utc
-    ]
+    return select_upcoming(fixtures)
 
 
 def _within_evening_window(fixtures: list[Fixture], target: date) -> list[Fixture]:
-    window_start = datetime.combine(target, datetime.min.time(), tzinfo=ISTANBUL).replace(hour=17)
-    window_end = datetime.combine(target, datetime.min.time(), tzinfo=ISTANBUL).replace(hour=23, minute=59, second=59)
-    return [f for f in fixtures if window_start <= f.kickoff.astimezone(ISTANBUL) <= window_end]
+    return select_upcoming(fixtures, target_date=target, evening=True)
 
 
 _RISK_TR = {"low": "düşük", "medium": "orta", "high": "yüksek"}
@@ -206,10 +200,7 @@ class ChatOrchestrator:
         target = _target_date_from_message(message)
         evening = _is_evening_request(message)
         provider = self._analysis_service._provider
-        fixtures = await provider.get_fixtures(target)
-        fixtures = _future_scheduled_fixtures(fixtures)
-        if evening:
-            fixtures = _within_evening_window(fixtures, target)
+        fixtures = select_upcoming(await provider.get_fixtures(target), target_date=target, evening=evening)
         ranked = []
         for fixture in fixtures:
             try:
@@ -241,11 +232,7 @@ class ChatOrchestrator:
         target = _target_date_from_message(message)
         evening = _is_evening_request(message)
         provider = self._analysis_service._provider
-        fixtures = await provider.get_fixtures(target)
-        fixtures = _future_scheduled_fixtures(fixtures)
-        if evening:
-            fixtures = _within_evening_window(fixtures, target)
-        fixtures.sort(key=lambda f: f.kickoff)
+        fixtures = select_upcoming(await provider.get_fixtures(target), target_date=target, evening=evening)
         window_note = " (bu akşam, 17:00-23:59)" if evening else ""
         if not fixtures:
             return f"{target.isoformat()}{window_note} için henüz başlamamış planlı bir maç bulamadım."
