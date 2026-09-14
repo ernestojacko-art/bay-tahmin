@@ -11,6 +11,22 @@ from app.schemas.prediction import MatchPrediction, SurpriseCandidate
 from app.services.analysis_service import AnalysisService
 from app.services.fixture_selection import istanbul_today, select_upcoming
 
+
+def _market_surprise(prediction: MatchPrediction) -> tuple[float, str, float, float] | None:
+    """Pick only a non-market-favourite outcome with a positive model edge."""
+    market = prediction.market_comparison.market_implied
+    if not prediction.market_comparison.market_available or market is None:
+        return None
+    model = {"1": prediction.one_x_two.home_win, "X": prediction.one_x_two.draw, "2": prediction.one_x_two.away_win}
+    implied = {"1": market.home_win, "X": market.draw, "2": market.away_win}
+    market_favorite = max(implied, key=implied.get)
+    selection = max((side for side in model if side != market_favorite), key=model.get)
+    edge = model[selection] - implied[selection]
+    if edge < 0.04:
+        return None
+    score = min(1.0, 0.70 * edge + 0.20 * model[selection] + 0.10 * (1 - implied[selection]))
+    return round(score, 4), selection, model[selection], implied[selection]
+
 router = APIRouter(tags=["predictions"])
 
 
@@ -44,7 +60,7 @@ async def daily_surprises(
     provider: BaseFootballDataProvider = Depends(get_provider),
     service: AnalysisService = Depends(get_analysis_service),
 ):
-    """Rank real fixtures by their strongest Cloud Engine HT/FT surprise scenario."""
+    """Rank real fixtures by market-validated 1X2 surprise potential."""
     try:
         fixtures = select_upcoming(await provider.get_fixtures(match_date, league_id), target_date=match_date)
     except BayTahminError as exc:
@@ -53,22 +69,30 @@ async def daily_surprises(
     ranked = []
     for fixture in fixtures:
         try:
+            dataset = await service.get_dataset(fixture.match_id)
             prediction = await service.analyze_match(fixture.match_id)
         except BayTahminError:
             continue
 
-        if not prediction.surprises:
+        # Generic surprise ranking is a match-result question.  It must not
+        # silently turn into an HT/FT list or use a market that is not open.
+        if not any(m.market_name.lower().startswith("maç sonucu 1x2") for m in dataset.odds_markets):
             continue
-
-        best = max(prediction.surprises, key=lambda item: item.composite_score)
+        best = _market_surprise(prediction)
+        if best is None:
+            continue
+        score, selection, model_probability, market_probability = best
         ranked.append({
             "match_id": prediction.match_id,
             "home_team": prediction.home_team.team_name,
             "away_team": prediction.away_team.team_name,
-            "combination": best.combination,
-            "score": best.composite_score,
-            "risk": best.risk.value,
-            "confidence": best.confidence,
+            "combination": selection,  # legacy field; use `selection` for 1X2 semantics
+            "selection": selection,
+            "score": score,
+            "model_probability": model_probability,
+            "market_implied_probability": market_probability,
+            "risk": prediction.confidence.risk.value,
+            "confidence": prediction.confidence.confidence,
             "data_quality": prediction.data_quality.value,
         })
 

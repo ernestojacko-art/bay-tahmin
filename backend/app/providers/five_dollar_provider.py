@@ -251,8 +251,8 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
         if isinstance(data.get("bookmakers"),list):
             for b in data["bookmakers"]:
                 if isinstance(b,dict) and isinstance(b.get("odds"),dict): books.append((b.get("name") or "Bet 365",b["odds"]))
-        aliases={"asian":"asian_handicap","goalline":"goal_line","corner":"corner_line","cards":"card_line","asian_half":"asian_handicap_half","goalline_half":"goal_line_half","corner_half":"corner_line_half","corner_asian":"corner_asian","cards_asian":"card_asian","btts":"btts","1x2_half":"1x2_half"}
-        names={"1x2":"Maç Sonucu 1X2","1x2_half":"İlk Yarı Maç Sonucu","goal_line":"Alt/Üst Gol","goal_line_half":"İlk Yarı Alt/Üst Gol","btts":"Karşılıklı Gol (KG)","asian_handicap":"Asya Handikap","asian_handicap_half":"İlk Yarı Asya Handikap","corner_line":"Alt/Üst Korner","corner_line_half":"İlk Yarı Alt/Üst Korner","corner_asian":"Korner Asya Handikap","card_line":"Alt/Üst Kart","card_asian":"Kart Asya Handikap"}
+        aliases={"asian":"asian_handicap","goalline":"goal_line","corner":"corner_line","cards":"card_line","asian_half":"asian_handicap_half","goalline_half":"goal_line_half","corner_half":"corner_line_half","corner_asian":"corner_asian","cards_asian":"card_asian","btts":"btts","1x2_half":"1x2_half","htft":"htft","half_full":"htft","half_time_full_time":"htft"}
+        names={"1x2":"Maç Sonucu 1X2","1x2_half":"İlk Yarı Maç Sonucu","htft":"İlk Yarı / Maç Sonucu","goal_line":"Alt/Üst Gol","goal_line_half":"İlk Yarı Alt/Üst Gol","btts":"Karşılıklı Gol (KG)","asian_handicap":"Asya Handikap","asian_handicap_half":"İlk Yarı Asya Handikap","corner_line":"Alt/Üst Korner","corner_line_half":"İlk Yarı Alt/Üst Korner","corner_asian":"Korner Asya Handikap","card_line":"Alt/Üst Kart","card_asian":"Kart Asya Handikap"}
         result=[]; seen=set()
         for book,odds in books:
             for raw_key,e in odds.items():
@@ -268,6 +268,9 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
                         if price>0: selections.append(OddsSelection(label=label,price=price))
                     except (TypeError,ValueError): pass
                 if key in {"1x2","1x2_half"}: add("1",stage.get("home"));add("X",stage.get("draw"));add("2",stage.get("away"))
+                elif key == "htft":
+                    for label in ("1/1", "1/X", "1/2", "X/1", "X/X", "X/2", "2/1", "2/X", "2/2"):
+                        add(label, stage.get(label) if label in stage else stage.get(label.replace("/", "_")))
                 elif key in {"goal_line","goal_line_half","corner_line","corner_line_half","card_line"}: add(f"Üst {line}",stage.get("over"));add(f"Alt {line}",stage.get("under"))
                 elif key=="btts": add("Var",stage.get("yes"));add("Yok",stage.get("no"))
                 else: add(f"Ev {line}",stage.get("home"));add(f"Dep {line}",stage.get("away"))

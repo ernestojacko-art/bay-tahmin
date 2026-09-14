@@ -19,8 +19,19 @@ from app.schemas.prediction import MarketComparison, OneXTwoProbabilities
 
 def _extract_1x2_selections(markets: list[OddsMarket]) -> dict[str, float] | None:
     for market in markets:
-        if market.market_name.upper() in ("1X2", "MATCH ODDS", "MATCH RESULT"):
-            return {s.label: s.price for s in market.selections}
+        # Providers append bookmaker names, e.g. "Maç Sonucu 1X2 (Bet 365)".
+        # Exact matching silently discarded that real market and caused the UI
+        # to compare/use the wrong fallback label.
+        name = market.market_name.casefold()
+        is_full_time_1x2 = (
+            name in {"1x2", "match odds", "match result"}
+            or name.startswith("maç sonucu 1x2")
+            or name.startswith("match result 1x2")
+        )
+        if is_full_time_1x2:
+            selections = {s.label.strip().upper(): s.price for s in market.selections}
+            if {"1", "X", "2"}.issubset(selections):
+                return selections
     return None
 
 

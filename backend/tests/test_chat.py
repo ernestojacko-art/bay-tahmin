@@ -15,6 +15,36 @@ from app.chat.llm_client import LLMClient
 from app.chat.orchestrator import ChatOrchestrator
 from app.core.config import get_settings
 from app.services.analysis_service import AnalysisService
+from app.chat.orchestrator import _match_surprise_candidate
+from app.schemas.common import DataQuality, RiskLevel
+from app.schemas.prediction import (
+    ConfidenceReport, DoubleChance, DrawNoBet, ExpectedGoals, MarketComparison,
+    MatchPrediction, OneXTwoProbabilities,
+)
+from app.schemas.team import TeamStrengthProfile
+from datetime import datetime, timezone
+
+
+def _profile(name: str) -> TeamStrengthProfile:
+    return TeamStrengthProfile(team_id=name, team_name=name, overall=0.5, attack=0.5, defense=0.5, form=0.5,
+        opponent_adjusted=0.5, home_strength=0.5, away_strength=0.5, matches_considered=10,
+        data_quality=DataQuality.HIGH, weights_used={})
+
+
+def test_market_favorite_is_never_returned_as_a_surprise_candidate():
+    prediction = MatchPrediction(
+        match_id="M1", generated_at=datetime.now(timezone.utc), home_team=_profile("Home"), away_team=_profile("Away"),
+        one_x_two=OneXTwoProbabilities(home_win=.55, draw=.25, away_win=.20),
+        double_chance=DoubleChance(home_or_draw=.80, draw_or_away=.45, home_or_away=.75),
+        draw_no_bet=DrawNoBet(home=.73, away=.27), expected_goals=ExpectedGoals(home_xg=1.5, away_xg=.9, total_xg=2.4),
+        score_matrix=[], btts_yes_probability=.45, over_under=[], asian_handicap=[],
+        half_time_one_x_two=OneXTwoProbabilities(home_win=.4, draw=.4, away_win=.2), half_time_full_time={"matrix": {}},
+        scenarios=[], surprises=[], model_contributions=[], data_quality=DataQuality.HIGH, warnings=[], disclaimers=[], sanity_flags=[],
+        confidence=ConfidenceReport(probability_home_favorite=.55, confidence=.6, risk=RiskLevel.MEDIUM, data_quality=DataQuality.HIGH, model_agreement=.8),
+        market_comparison=MarketComparison(market_available=True, market_implied=OneXTwoProbabilities(home_win=.60, draw=.25, away_win=.15), model_vs_market_divergence=.05),
+    )
+
+    assert _match_surprise_candidate(prediction) is None
 
 
 @pytest.fixture
