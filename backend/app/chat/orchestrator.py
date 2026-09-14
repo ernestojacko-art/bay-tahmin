@@ -2,19 +2,18 @@
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
+from datetime import date, datetime, timedelta
 
 from app.chat.context_memory import ContextMemoryStore, MatchContext
 from app.chat.football_expert import FootballExpertAgent
 from app.chat.llm_client import LLMClient
 from app.core.config import Settings
 from app.core.exceptions import BayTahminError, MatchNotFoundError
-from app.providers.models import Fixture, FixtureStatus
+from app.providers.models import Fixture, MatchRawDataset
 from app.schemas.chat import ChatResponse
 from app.schemas.prediction import MatchPrediction
 from app.services.analysis_service import AnalysisService
-from app.services.fixture_selection import ISTANBUL, is_upcoming_scheduled, select_upcoming
+from app.services.fixture_selection import ISTANBUL, select_upcoming
 
 
 _MATCH_INTENT_PATTERNS = re.compile(
@@ -28,6 +27,7 @@ _DAILY_SURPRISE_PATTERNS = re.compile(
     r"(sürpriz|iy/ms|ht/ft).{0,80}(5|beş).{0,80}(maç|öner)",
     re.IGNORECASE,
 )
+_HTFT_REQUEST_PATTERN = re.compile(r"\biy/ms\b|\bht/ft\b|ilk\s+yarı\s*/?\s*maç\s+sonucu", re.IGNORECASE)
 _FIXTURE_LIST_PATTERNS = re.compile(
     r"(bugün|bu akşam|bu gece|yarın|yarın akşam|hafta ?sonu).{0,40}"
     r"(maç|karşılaşma|fikstür|program).{0,20}(var mı|neler|hangi|listele)?|"
@@ -42,6 +42,11 @@ def _looks_like_match_question(message: str) -> bool:
 
 def _looks_like_daily_surprise_request(message: str) -> bool:
     return bool(_DAILY_SURPRISE_PATTERNS.search(message))
+
+
+def _requests_htft_market(message: str) -> bool:
+    """Do not turn a generic surprise request into an HT/FT recommendation."""
+    return bool(_HTFT_REQUEST_PATTERN.search(message))
 
 
 def _looks_like_fixture_list_request(message: str) -> bool:
@@ -83,6 +88,45 @@ def _quality_tr(value) -> str:
     return _QUALITY_TR.get(raw, raw)
 
 
+def _has_market(dataset: MatchRawDataset, marker: str) -> bool:
+    marker = marker.lower()
+    return any(marker in market.market_name.lower() for market in dataset.odds_markets)
+
+
+def _match_surprise_candidate(prediction: MatchPrediction) -> tuple[float, str, float, float] | None:
+    """Return a market-grounded match-level surprise; never an invented HT/FT tip."""
+    market = prediction.market_comparison.market_implied
+    if not prediction.market_comparison.market_available or market is None:
+        return None
+
+    model_values = {"1": prediction.one_x_two.home_win, "X": prediction.one_x_two.draw, "2": prediction.one_x_two.away_win}
+    market_values = {"1": market.home_win, "X": market.draw, "2": market.away_win}
+    model_pick = max(model_values, key=model_values.get)
+    market_pick = max(market_values, key=market_values.get)
+
+    # A surprise must be a non-market-favourite outcome with a positive model
+    # edge. This prevents the market favourite from being labelled surprise.
+    if model_pick != market_pick:
+        selection = model_pick
+    else:
+        candidates = ["X", *(side for side in ("1", "2") if side != market_pick)]
+        selection = max(candidates, key=model_values.get)
+
+    probability = model_values[selection]
+    market_probability = market_values[selection]
+    edge = probability - market_probability
+    if selection == market_pick or edge < 0.04:
+        return None
+    if selection == "X":
+        label = "Beraberlik"
+    elif selection == "1":
+        label = f"{prediction.home_team.team_name} kazanır"
+    else:
+        label = f"{prediction.away_team.team_name} kazanır"
+    score = min(1.0, 0.70 * edge + 0.20 * probability + 0.10 * (1 - market_probability))
+    return round(score, 4), label, probability, market_probability
+
+
 def _favorite_label(prediction: MatchPrediction) -> str:
     ox = prediction.one_x_two
     values = {
@@ -103,15 +147,18 @@ def _narrate_half_time(prediction: MatchPrediction) -> str:
     )
 
 
-def _narrate_surprises(prediction: MatchPrediction) -> str:
-    if not prediction.surprises:
-        return "Bu maç için modelin yeterli güçte bulduğu belirgin bir İY/MS sürpriz senaryosu yok."
-    lines = ["Bu maç için öne çıkan sürpriz İY/MS senaryoları:"]
-    for s in prediction.surprises[:5]:
-        lines.append(
-            f"• {s.combination} — sürpriz skoru {s.composite_score:.2f}, risk {_risk_tr(s.risk)}"
-        )
-    return "\n".join(lines)
+def _narrate_surprises(prediction: MatchPrediction, explicit_htft: bool = False) -> str:
+    if explicit_htft:
+        return "İY/MS piyasasının gerçekten açık olduğunu doğrulamadan İY/MS önerisi vermiyorum. Bu piyasa API'de mevcutsa ayrıca doğrulanarak analiz edilir."
+    candidate = _match_surprise_candidate(prediction)
+    if candidate is None:
+        return "Bu maçta 1X2 piyasasına göre anlamlı model avantajı taşıyan bir sürpriz adayı yok. Piyasa favorisini sürpriz diye göstermiyorum."
+    score, label, model_probability, market_probability = candidate
+    return (
+        f"Bu maçta öne çıkan sürpriz adayı: {label}. "
+        f"Model olasılığı %{model_probability*100:.1f}, piyasanın ima ettiği olasılık %{market_probability*100:.1f}; "
+        f"sürpriz skoru {score:.2f}."
+    )
 
 
 def _narrate_confidence(prediction: MatchPrediction) -> str:
@@ -162,6 +209,18 @@ def _narrate_summary(prediction: MatchPrediction) -> str:
     ]
     if prediction.scenarios:
         lines += ["", "Modelin öne çıkardığı senaryo:", f"• {favorite} sonucunun gerçekleşmesi daha güçlü görünüyor."]
+    if prediction.market_comparison.market_available and prediction.market_comparison.market_implied:
+        market = prediction.market_comparison.market_implied
+        market_favorite = max({
+            prediction.home_team.team_name: market.home_win,
+            "Beraberlik": market.draw,
+            prediction.away_team.team_name: market.away_win,
+        }, key=lambda side: {
+            prediction.home_team.team_name: market.home_win,
+            "Beraberlik": market.draw,
+            prediction.away_team.team_name: market.away_win,
+        }[side])
+        lines += ["", f"Piyasa favorisi: {market_favorite}. Model favorisi: {favorite}."]
     lines += ["", _narrate_confidence(prediction)]
     return "\n".join(lines)
 
@@ -171,7 +230,7 @@ def _build_structured_match_reply(message: str, prediction: MatchPrediction) -> 
     if "ilk yarı" in lowered or "ht" in lowered:
         return _narrate_half_time(prediction)
     if "sürpriz" in lowered:
-        return _narrate_surprises(prediction)
+        return _narrate_surprises(prediction, explicit_htft=_requests_htft_market(message))
     if "güven" in lowered or "banko" in lowered:
         return _narrate_confidence(prediction)
     if "çifte şans" in lowered or "dnb" in lowered or "beraberlik iadeli" in lowered:
@@ -201,31 +260,44 @@ class ChatOrchestrator:
         evening = _is_evening_request(message)
         provider = self._analysis_service._provider
         fixtures = select_upcoming(await provider.get_fixtures(target), target_date=target, evening=evening)
+        wants_htft = _requests_htft_market(message)
         ranked = []
         for fixture in fixtures:
             try:
+                dataset = await self._analysis_service.get_dataset(fixture.match_id)
                 prediction = await self._analysis_service.analyze_match(fixture.match_id)
             except BayTahminError:
                 continue
-            if not prediction.surprises:
-                continue
-            best = max(prediction.surprises, key=lambda item: item.composite_score)
-            ranked.append((best.composite_score, fixture, prediction, best))
+            if wants_htft:
+                if not _has_market(dataset, "ilk yarı / maç sonucu") or not prediction.surprises:
+                    continue
+                best = max(prediction.surprises, key=lambda item: item.composite_score)
+                ranked.append((best.composite_score, fixture, prediction, best))
+            else:
+                if not _has_market(dataset, "maç sonucu 1x2"):
+                    continue
+                surprise = _match_surprise_candidate(prediction)
+                if surprise is not None:
+                    ranked.append((surprise[0], fixture, prediction, surprise))
         ranked.sort(key=lambda item: item[0], reverse=True)
         ranked = ranked[:5]
         if not ranked:
             window_note = " (17:00-23:59 aralığında)" if evening else ""
-            return f"{target.isoformat()}{window_note} için gerçek veriyle yeterli sayıda analiz edilebilir, henüz başlamamış sürpriz İY/MS maçı bulamadım."
-        lines = [f"{target.isoformat()} için sürpriz potansiyeli en yüksek İY/MS maçlar:"]
+            market_name = "İY/MS" if wants_htft else "Maç Sonucu 1X2"
+            return f"{target.isoformat()}{window_note} için {market_name} piyasası açık ve yeterli model avantajı bulunan henüz başlamamış sürpriz adayı bulamadım."
+        requested = "İY/MS sürprizleri" if wants_htft else "maç sürprizi adayları"
+        lines = [f"{target.isoformat()} için sürpriz potansiyeli en yüksek {requested}:"]
         for index, (_, fixture, prediction, best) in enumerate(ranked, 1):
             kickoff_local = fixture.kickoff.astimezone(ISTANBUL).strftime("%H:%M")
-            lines.append(
-                f"{index}. {fixture.home_team.name} - {fixture.away_team.name} ({kickoff_local})\n"
-                f"   İY/MS: {best.combination} | Sürpriz skoru: {best.composite_score:.2f} | "
-                f"Risk: {_risk_tr(best.risk)} | Güven: %{best.confidence*100:.1f}"
-            )
+            if wants_htft:
+                lines.append(f"{index}. {fixture.home_team.name} - {fixture.away_team.name} ({kickoff_local})\n"
+                    f"   İY/MS: {best.combination} | Sürpriz skoru: {best.composite_score:.2f} | Risk: {_risk_tr(best.risk)} | Güven: %{best.confidence*100:.1f}")
+            else:
+                _, label, model_probability, market_probability = best
+                lines.append(f"{index}. {fixture.home_team.name} - {fixture.away_team.name} ({kickoff_local})\n"
+                    f"   Sürpriz adayı: {label} | Sürpriz skoru: {best[0]:.2f} | Model: %{model_probability*100:.1f} | Piyasa: %{market_probability*100:.1f} | Risk: {_risk_tr(prediction.confidence.risk)}")
         lines.append("")
-        lines.append("Bu liste yalnızca 5DollarFootballAPI üzerinden bulunan, henüz başlamamış gerçek maçların Cloud Intelligence Engine tarafından analiz edilmesiyle oluşturuldu.")
+        lines.append("Liste yalnızca 5DollarFootballAPI üzerinden doğrulanan, ilgili piyasası açık ve henüz başlamamış gerçek maçlardan üretildi.")
         return "\n".join(lines)
 
     async def _list_matches(self, message: str) -> str:
