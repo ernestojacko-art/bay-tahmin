@@ -86,14 +86,30 @@ def _within_evening_window(fixtures: list[Fixture], target: date) -> list[Fixtur
 
 
 # Bilinen üst düzey Avrupa ligleri/kupaları -- 5DollarFootballAPI'nin verdiği
-# league_name alanına göre eşleştirilir. Bu liste kapsamlı değildir; API'nin
-# döndürdüğü tam isimlerle eşleşmeyen bir lig burada yanlışlıkla dışarıda
-# kalabilir -- bu bilinen bir sınırlamadır (ayrı bir "ülke/bölge" alanı yok).
+# league_name alanına göre eşleştirilir. ÖNEMLİ: "Premier League", "Serie A",
+# "Champions League" gibi isimler Avrupa'ya özel DEĞİLDİR -- Nijerya, Moğolistan
+# gibi ülkelerin de kendi "Premier League"i, Brezilya'nın "Serie A"sı, AFC'nin
+# (Asya) kendi "Champions League"i vardır. Bu yüzden kıtasal kupalar UEFA öneki
+# gerektirir, ve isim çakışması riski taşıyan liglerin isimleri bilinen
+# Avrupa-dışı ülke adlarını İÇERMEDİĞİ sürece kabul edilir.
 _TOP_EUROPEAN_LEAGUE_HINTS = (
-    "premier league", "la liga", "laliga", "serie a", "bundesliga", "ligue 1",
-    "champions league", "europa league", "conference league", "eredivisie",
-    "primeira liga", "süper lig", "super lig", "premiership", "jupiler",
+    "uefa champions league", "uefa europa league", "uefa conference league",
+    "english premier league", "la liga", "laliga", "italian serie a",
+    "bundesliga", "ligue 1", "eredivisie", "primeira liga", "süper lig",
+    "super lig", "scottish premiership", "jupiler",
 )
+# "Premier League" ve "Serie A" gibi çakışma riski taşıyan ama ülke önekiyle
+# gelmeyebilecek isimler için: bu ülke isimlerinden biri geçiyorsa KESİNLİKLE
+# Avrupa değildir, ne kadar "premier league"/"serie a" içerirse içersin.
+_NON_EUROPEAN_COUNTRY_HINTS = (
+    "nigeria", "ghana", "kenya", "zambia", "rwanda", "tanzania", "uganda",
+    "india", "bangladesh", "mongolia", "brazil", "brasil", "ecuador", "chile",
+    "bolivia", "venezuela", "colombia", "paraguay", "china", "korea", "japan",
+    "thailand", "vietnam", "indonesia", "malaysia", "afc", "caf", "concacaf",
+    "conmebol", "egypt", "morocco", "tunisia", "algeria", "saudi", "qatar",
+    "uae", "iran", "iraq", "australia",
+)
+_AMBIGUOUS_HINTS = ("premier league", "serie a", "champions league", "super league")
 
 _EUROPEAN_LEAGUE_REQUEST_PATTERN = re.compile(r"avrupa|üst lig|büyük lig|top lig", re.IGNORECASE)
 
@@ -106,7 +122,17 @@ _SURPRISE_CONTINUATION_PATTERN = re.compile(
 
 def _is_top_european_league(fixture: Fixture) -> bool:
     name = (fixture.league_name or "").lower()
-    return any(hint in name for hint in _TOP_EUROPEAN_LEAGUE_HINTS)
+    if not name:
+        return False
+    if any(country in name for country in _NON_EUROPEAN_COUNTRY_HINTS):
+        return False
+    if any(hint in name for hint in _TOP_EUROPEAN_LEAGUE_HINTS):
+        return True
+    # "premier league"/"serie a" gibi belirsiz isimler, yukarıdaki ülke
+    # kontrolünden geçtiyse (yani bilinen bir Avrupa-dışı ülke adı yoksa)
+    # kabul edilir -- ama bu %100 garantili değildir (API'de ülke adı hiç
+    # geçmiyor olabilir), bu yüzden hâlâ bir sınırlama olarak kalır.
+    return any(hint in name for hint in _AMBIGUOUS_HINTS)
 
 
 def _wants_european_leagues(message: str) -> bool:
