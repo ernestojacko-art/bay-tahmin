@@ -85,6 +85,34 @@ def _within_evening_window(fixtures: list[Fixture], target: date) -> list[Fixtur
     return [f for f in fixtures if window_start <= f.kickoff.astimezone(ISTANBUL) <= window_end]
 
 
+# Bilinen üst düzey Avrupa ligleri/kupaları -- 5DollarFootballAPI'nin verdiği
+# league_name alanına göre eşleştirilir. Bu liste kapsamlı değildir; API'nin
+# döndürdüğü tam isimlerle eşleşmeyen bir lig burada yanlışlıkla dışarıda
+# kalabilir -- bu bilinen bir sınırlamadır (ayrı bir "ülke/bölge" alanı yok).
+_TOP_EUROPEAN_LEAGUE_HINTS = (
+    "premier league", "la liga", "laliga", "serie a", "bundesliga", "ligue 1",
+    "champions league", "europa league", "conference league", "eredivisie",
+    "primeira liga", "süper lig", "super lig", "premiership", "jupiler",
+)
+
+_EUROPEAN_LEAGUE_REQUEST_PATTERN = re.compile(r"avrupa|üst lig|büyük lig|top lig", re.IGNORECASE)
+
+_SURPRISE_CONTINUATION_PATTERN = re.compile(
+    r"hangi maç|hangileri|hangi karşılaş|başka|farklı|diğer|değiştir|filtrele|"
+    r"daha|tekrar|yine|\d+\s*(tane\s*)?maç|kaç tane|eksik",
+    re.IGNORECASE,
+)
+
+
+def _is_top_european_league(fixture: Fixture) -> bool:
+    name = (fixture.league_name or "").lower()
+    return any(hint in name for hint in _TOP_EUROPEAN_LEAGUE_HINTS)
+
+
+def _wants_european_leagues(message: str) -> bool:
+    return bool(_EUROPEAN_LEAGUE_REQUEST_PATTERN.search(message))
+
+
 _RISK_TR = {"low": "düşük", "medium": "orta", "high": "yüksek"}
 _QUALITY_TR = {"low": "düşük", "medium": "orta", "high": "yüksek"}
 
@@ -213,15 +241,29 @@ class ChatOrchestrator:
         self._llm_client = llm_client
         self._context_store = context_store
 
-    async def _daily_surprises(self, message: str) -> str:
+    async def _daily_surprises(self, message: str, exclude_match_ids: frozenset[str] = frozenset()) -> tuple[str, list[str]]:
         target = _target_date_from_message(message)
         evening = _is_evening_request(message)
+        european_only = _wants_european_leagues(message)
 
         provider = self._analysis_service._provider
         fixtures = await provider.get_fixtures(target)
         fixtures = _future_scheduled_fixtures(fixtures)
         if evening:
             fixtures = _within_evening_window(fixtures, target)
+        if european_only:
+            fixtures = [f for f in fixtures if _is_top_european_league(f)]
+        already_shown = [f for f in fixtures if f.match_id in exclude_match_ids]
+        if exclude_match_ids:
+            fixtures = [f for f in fixtures if f.match_id not in exclude_match_ids]
+
+        # Her aday maç, iki takımın da yıllık lig geçmişini çekmeyi gerektiriyor
+        # (form/H2H için). Filtrelenmemiş bir günde onlarca farklı ligden yüzlerce
+        # maç olabilir -- hepsini sırayla analiz etmeye çalışmak 5DollarFootballAPI'yi
+        # rate-limit'e (429) sokuyor ve rastgele/eksik sonuçlara yol açıyor. Adayları
+        # makul bir üst sınırla kısıtlıyoruz.
+        MAX_CANDIDATES = 40
+        fixtures = fixtures[:MAX_CANDIDATES]
 
         ranked = []
         for fixture in fixtures:
@@ -238,18 +280,29 @@ class ChatOrchestrator:
         ranked = ranked[:5]
         if not ranked:
             window_note = " (17:00-23:59 aralığında)" if evening else ""
+            league_note = ", sadece üst düzey Avrupa liglerinde" if european_only else ""
+            already_note = (
+                f" Daha önce gösterdiğim {len(already_shown)} maç dışında,"
+                if exclude_match_ids and already_shown else ""
+            )
             return (
-                f"{target.isoformat()}{window_note} için, piyasası açık ve yeterli veri kalitesine sahip "
+                f"{target.isoformat()}{window_note}{league_note} için,{already_note} piyasası açık ve yeterli "
+                "veri kalitesine sahip başka bir gerçek sürpriz İY/MS adayı bulamadım. Elimdeki tüm kaliteli "
+                "adayları zaten paylaştım."
+                if exclude_match_ids else
+                f"{target.isoformat()}{window_note}{league_note} için, piyasası açık ve yeterli veri kalitesine sahip "
                 "gerçek bir sürpriz İY/MS adayı bulamadım. Bu, o saatlerdeki maçların çoğunda bahis "
                 "piyasasının henüz açılmamış olmasından ya da veri örnekleminin yetersiz kalmasından "
                 "kaynaklanabilir."
-            )
+            ), []
 
-        lines = [f"{target.isoformat()} için sürpriz potansiyeli en yüksek İY/MS maçlar:"]
+        league_label = " üst düzey Avrupa liglerinden" if european_only else ""
+        header_prefix = "Daha önce gösterdiklerim dışında, " if exclude_match_ids else ""
+        lines = [f"{header_prefix}{target.isoformat()} için{league_label} sürpriz potansiyeli en yüksek İY/MS maçlar:"]
         if len(ranked) < 5:
             lines[0] = (
-                f"{target.isoformat()} için piyasası açık ve yeterli veri kalitesine sahip yalnızca "
-                f"{len(ranked)} güçlü sürpriz adayı bulundu:"
+                f"{header_prefix}{target.isoformat()} için{league_label}, piyasası açık ve yeterli veri kalitesine "
+                f"sahip yalnızca {len(ranked)} güçlü sürpriz adayı bulundu:"
             )
         for index, (_, fixture, prediction, best) in enumerate(ranked, 1):
             kickoff_local = fixture.kickoff.astimezone(ISTANBUL).strftime("%H:%M")
@@ -260,11 +313,12 @@ class ChatOrchestrator:
             )
         lines.append("")
         lines.append(
-            "Bu liste yalnızca 5DollarFootballAPI üzerinden bulunan, henüz başlamamış ve piyasası "
+            "[TANI-v3] Bu liste yalnızca 5DollarFootballAPI üzerinden bulunan, henüz başlamamış ve piyasası "
             "açık gerçek maçların Cloud Intelligence Engine tarafından analiz edilip gerçek piyasa "
             "olasılıklarıyla karşılaştırılmasıyla oluşturuldu."
         )
-        return "\n".join(lines)
+        shown_ids = [fixture.match_id for (_, fixture, _, _) in ranked]
+        return "\n".join(lines), shown_ids
 
     async def _list_matches(self, message: str) -> str:
         """§5 TODAY_MATCHES/EVENING_MATCHES: sürpriz analizi gerektirmeyen düz fikstür listesi.
@@ -328,8 +382,10 @@ class ChatOrchestrator:
 
         if _looks_like_daily_surprise_request(message):
             try:
-                reply = await self._daily_surprises(message)
+                reply, shown_ids = await self._daily_surprises(message)
                 context.previous_intent = "daily_surprises"
+                context.last_surprise_query = message
+                context.last_surprise_match_ids = shown_ids
                 context.add_turn("assistant", reply, self._settings.chat_context_max_turns)
                 return ChatResponse(
                     session_id=session_id, reply=reply, intent="match_analysis",
@@ -343,13 +399,38 @@ class ChatOrchestrator:
                     used_prediction_engine=False, grounded_in_analysis=False,
                 )
 
-        if context.previous_intent == "daily_surprises" and re.search(r"hangi maç|hangileri|hangi karşılaş", message, re.I):
-            reply = await self._daily_surprises("bugün sürpriz İY/MS maçları")
-            context.add_turn("assistant", reply, self._settings.chat_context_max_turns)
-            return ChatResponse(
-                session_id=session_id, reply=reply, intent="match_analysis",
-                match_id=None, used_prediction_engine=True, grounded_in_analysis=True,
-            )
+        # Sürpriz/fikstür listesi üzerine gelen doğal devam mesajları ("başka
+        # üst liglerden ver", "3 maç daha ver", "farklı maçlar var mı" gibi)
+        # sürpriz/maç anahtar kelimesi içermeyebilir; bu yüzden yukarıdaki
+        # desenle yakalanamaz. Önceki niyet hâlâ sürpriz/fikstür listesiyse
+        # VE mesaj belirli bir maçtan bahsetmiyorsa, arayüzden gelen (ve o an
+        # ekranda açık olan alakasız bir maça ait olabilecek) match_id'yi
+        # görmezden gelip önceki sorguyu yeni mesajla birleştirip, daha önce
+        # gösterilen maçları hariç tutarak tekrar çalıştırıyoruz.
+        if (
+            context.previous_intent in ("daily_surprises", "fixture_list")
+            and not _looks_like_match_question(message)
+            and not _looks_like_daily_surprise_request(message)
+        ):
+            resolved_team_match = await self._resolve_match_by_teams(message)
+            if resolved_team_match is None and (
+                _SURPRISE_CONTINUATION_PATTERN.search(message) or _wants_european_leagues(message)
+            ):
+                combined_query = f"{context.last_surprise_query or ''} {message}".strip()
+                try:
+                    reply, shown_ids = await self._daily_surprises(
+                        combined_query, exclude_match_ids=frozenset(context.last_surprise_match_ids)
+                    )
+                    context.previous_intent = "daily_surprises"
+                    context.last_surprise_query = combined_query
+                    context.last_surprise_match_ids = context.last_surprise_match_ids + shown_ids
+                    context.add_turn("assistant", reply, self._settings.chat_context_max_turns)
+                    return ChatResponse(
+                        session_id=session_id, reply=reply, intent="match_analysis",
+                        match_id=None, used_prediction_engine=True, grounded_in_analysis=True,
+                    )
+                except Exception:
+                    pass  # düşer, aşağıdaki genel akışa devam eder
 
         # §5 TODAY_MATCHES/EVENING_MATCHES: sürpriz istenmeyen düz fikstür soruları da
         # gerçek veriyle cevaplanmalı -- LLM'e bırakılırsa fikstür uydurma riski doğar.
