@@ -97,7 +97,7 @@ class PredictionEngine:
         overall_quality = confidence.data_quality
         warnings = list(dataset.missing_fields)
         disclaimers = [
-            "Bu analiz, istatistiksel modelleme ve mevcut verilerden üretilmiştir. "
+            "[TANI-v4] Bu analiz, istatistiksel modelleme ve mevcut verilerden üretilmiştir. "
             "Garanti bir sonuç değildir ve finansal tavsiye olarak değerlendirilmemelidir.",
         ]
         if overall_quality in (DataQuality.LOW, DataQuality.INSUFFICIENT):
