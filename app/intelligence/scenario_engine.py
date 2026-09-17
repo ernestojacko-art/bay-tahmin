@@ -24,6 +24,7 @@ def build_scenarios(
     expected_goals: ExpectedGoals,
     home_team_name: str,
     away_team_name: str,
+    market_implied: OneXTwoProbabilities | None = None,
 ) -> list[MatchScenario]:
     scenarios: list[MatchScenario] = []
     tempo = _tempo_label(expected_goals.total_xg)
@@ -36,15 +37,36 @@ def build_scenarios(
     outcomes_sorted = sorted(outcomes, key=lambda o: o[1], reverse=True)
 
     favorite_key, favorite_prob, fav_team, other_team, fav_is_home = outcomes_sorted[0]
+
+    # KRİTİK: "favori" burada her zaman MODELİN kendi görüşüdür -- piyasanın
+    # favorisiyle KARIŞTIRILMAMALI. Bir maç zaten sürpriz adayıysa (model
+    # piyasadan ayrışıyorsa), modelin favorisi piyasanın gördüğü favoriden
+    # FARKLI olabilir. Bu durumda bunu açıkça belirtiyoruz; aksi halde
+    # kullanıcı "favori" etiketini piyasanın favorisiyle karıştırır.
+    market_note = ""
+    if market_implied is not None:
+        market_outcomes = [
+            ("home_win", market_implied.home_win, home_team_name),
+            ("draw", market_implied.draw, "Beraberlik"),
+            ("away_win", market_implied.away_win, away_team_name),
+        ]
+        market_favorite_key, _, market_favorite_team = max(market_outcomes, key=lambda o: o[1])
+        if market_favorite_key != favorite_key:
+            market_note = (
+                f" (Not: Bahis piyasası burada {market_favorite_team}'ı favori görüyor -- "
+                "bu, modelin görüşü ile piyasanın görüşü arasında bir ayrışma; sürpriz "
+                "potansiyelinin kaynağı da tam olarak bu.)"
+            )
+
     if favorite_key == "draw":
         favorite_desc = (
-            f"İstatistiksel olarak en olası tek sonuç, {home_team_name} ile "
-            f"{away_team_name} arasında bir beraberlik."
+            f"İstatistiksel modele göre en olası tek sonuç, {home_team_name} ile "
+            f"{away_team_name} arasında bir beraberlik.{market_note}"
         )
-        favorite_label = "Beraberlik favori"
+        favorite_label = "Beraberlik (model favorisi)"
     else:
-        favorite_desc = f"{fav_team}, modelin bu maçı kazanma favorisi."
-        favorite_label = f"{fav_team} favori"
+        favorite_desc = f"{fav_team}, MODELİN bu maçı kazanma favorisi.{market_note}"
+        favorite_label = f"{fav_team} (model favorisi)"
     scenarios.append(
         MatchScenario(
             scenario_type="favorite",

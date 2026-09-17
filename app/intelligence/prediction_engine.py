@@ -63,17 +63,17 @@ class PredictionEngine:
             rho=settings.dixon_coles_rho,
         )
 
+        # Market Cross-Check runs before scenarios/surprises so both can note
+        # when the model's own favorite differs from what the market prices in.
+        market_comparison = cross_check(ensemble.ensemble_1x2, dataset.odds_markets)
+
         scenarios = build_scenarios(
             ensemble.ensemble_1x2,
             expected_goals,
             dataset.fixture.home_team.name,
             dataset.fixture.away_team.name,
+            market_comparison.market_implied,
         )
-
-        # Market Cross-Check must run BEFORE surprise ranking: a "surprise"
-        # is defined as market/model disagreement, so rank_surprises needs
-        # this result as an input, not the other way around.
-        market_comparison = cross_check(ensemble.ensemble_1x2, dataset.odds_markets)
 
         surprises = rank_surprises(
             htft, ensemble.ensemble_1x2, home_profile, away_profile, ensemble.model_agreement,
