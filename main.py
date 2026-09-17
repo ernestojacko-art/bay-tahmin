@@ -49,16 +49,64 @@ async def legacy_leagues():
     return []
 
 
-def _legacy_analysis_contract(prediction):
+def _recent_match_json(m):
+    return {
+        "date": m.date.isoformat(),
+        "opponent": m.opponent.name,
+        "is_home": m.is_home,
+        "goals_for": m.goals_for,
+        "goals_against": m.goals_against,
+        "result": m.result.value if hasattr(m.result, "value") else str(m.result),
+    }
+
+
+def _standing_json(s):
+    if s is None:
+        return None
+    return {
+        "position": s.position, "played": s.played, "won": s.won, "drawn": s.drawn,
+        "lost": s.lost, "goals_for": s.goals_for, "goals_against": s.goals_against, "points": s.points,
+    }
+
+
+def _team_context_json(team_data):
+    return {
+        "team_name": team_data.team.name,
+        "recent_matches": [_recent_match_json(m) for m in team_data.recent_matches[:10]],
+        "recent_matches_home": [_recent_match_json(m) for m in team_data.recent_matches_home[:10]],
+        "recent_matches_away": [_recent_match_json(m) for m in team_data.recent_matches_away[:10]],
+        "standing": _standing_json(team_data.standing),
+    }
+
+
+def _market_json(m):
+    return {
+        "market_name": m.market_name,
+        "bookmaker": m.bookmaker,
+        "selections": [{"label": s.label, "price": s.price} for s in m.selections],
+    }
+
+
+def _legacy_analysis_contract(prediction, dataset=None):
     """Expose Cloud Engine output both in its native shape and legacy-friendly fields."""
     data = prediction.model_dump(mode="json")
     top_scores = sorted(data.get("score_matrix") or [], key=lambda item: item.get("probability", 0), reverse=True)[:5]
     scenarios = data.get("scenarios") or []
     surprises = data.get("surprises") or []
 
+    context = None
+    if dataset is not None:
+        context = {
+            "home_team": _team_context_json(dataset.home_team_data),
+            "away_team": _team_context_json(dataset.away_team_data),
+            "h2h": [_recent_match_json(m) for m in (dataset.h2h.matches[:10] if dataset.h2h else [])],
+            "odds_markets": [_market_json(m) for m in dataset.odds_markets],
+        }
+
     return {
         "analysis": data,
         "prediction": data,
+        "context": context,
         "source": "BAY_TAHMIN_FOOTBALL_INTELLIGENCE_ENGINE",
         "provider": "5dollarfootballapi",
         "one_x_two": data.get("one_x_two"),
@@ -93,8 +141,13 @@ def _legacy_analysis_contract(prediction):
 
 @app.get("/ai/analyze/{match_id}", tags=["legacy-compat"])
 async def legacy_ai_analyze(match_id: int):
-    prediction = await get_analysis_service().analyze_match(str(match_id))
-    return _legacy_analysis_contract(prediction)
+    service = get_analysis_service()
+    prediction = await service.analyze_match(str(match_id))
+    try:
+        dataset = await service.get_dataset(str(match_id))
+    except Exception:
+        dataset = None
+    return _legacy_analysis_contract(prediction, dataset)
 
 
 @app.post("/matches/{match_id}/chat", tags=["legacy-compat"])
