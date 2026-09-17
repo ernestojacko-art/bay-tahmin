@@ -163,6 +163,20 @@ def _favorite_label(prediction: MatchPrediction) -> str:
     return max(values, key=values.get)
 
 
+def _market_favorite_label(prediction: MatchPrediction) -> str | None:
+    """Piyasanın favorisi -- modelin favorisiyle KARIŞTIRILMAMALI."""
+    mc = prediction.market_comparison
+    if not mc.market_available or mc.market_implied is None:
+        return None
+    mi = mc.market_implied
+    values = {
+        prediction.home_team.team_name: mi.home_win,
+        "Beraberlik": mi.draw,
+        prediction.away_team.team_name: mi.away_win,
+    }
+    return max(values, key=values.get)
+
+
 def _narrate_half_time(prediction: MatchPrediction) -> str:
     ht = prediction.half_time_one_x_two
     return (
@@ -221,13 +235,21 @@ def _narrate_summary(prediction: MatchPrediction) -> str:
     ox = prediction.one_x_two
     eg = prediction.expected_goals
     favorite = _favorite_label(prediction)
+    market_favorite = _market_favorite_label(prediction)
 
     lines = [
-        f"Bu maç için ana görüşüm: {favorite}.",
+        f"Bu maç için ana görüşüm (model): {favorite}.",
+    ]
+    if market_favorite is not None and market_favorite != favorite:
+        lines.append(
+            f"Not: Bahis piyasası burada {market_favorite}'ı favori görüyor -- yani model "
+            "ile piyasa bu maçta ayrışıyor, bu da onu potansiyel bir sürpriz adayı yapıyor."
+        )
+    lines += [
         "",
         "Tahmin özeti:",
         f"• Maç sonucu: {prediction.home_team.team_name} %{ox.home_win*100:.1f} | Beraberlik %{ox.draw*100:.1f} | {prediction.away_team.team_name} %{ox.away_win*100:.1f}",
-        f"• En güçlü sonuç eğilimi: {favorite}",
+        f"• En güçlü sonuç eğilimi (model): {favorite}",
         f"• Beklenen gol projeksiyonu: {eg.home_xg:.2f} - {eg.away_xg:.2f} (toplam {eg.total_xg:.2f})",
         f"• Karşılıklı gol olur: %{prediction.btts_yes_probability*100:.1f}",
     ]
