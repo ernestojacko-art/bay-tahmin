@@ -33,19 +33,19 @@ class DataCompletenessReport:
 def _assess_team_completeness(dataset: TeamRawDataset, min_matches: int) -> list[str]:
     missing: list[str] = []
     if len(dataset.recent_matches) < min_matches:
-        missing.append(f"{dataset.team.name}: recent_matches < {min_matches}")
+        missing.append(f"{dataset.team.name}: son maç sayısı {min_matches}'in altında")
     if not dataset.recent_matches_home:
-        missing.append(f"{dataset.team.name}: no home-specific recent matches")
+        missing.append(f"{dataset.team.name}: ev sahibine özel son maç verisi yok")
     if not dataset.recent_matches_away:
-        missing.append(f"{dataset.team.name}: no away-specific recent matches")
+        missing.append(f"{dataset.team.name}: deplasmana özel son maç verisi yok")
     if dataset.standing is None:
-        missing.append(f"{dataset.team.name}: no league standing available")
+        missing.append(f"{dataset.team.name}: lig sıralaması verisi yok")
     if dataset.fixture_congestion is None:
-        missing.append(f"{dataset.team.name}: no fixture congestion data")
+        missing.append(f"{dataset.team.name}: fikstür yoğunluğu verisi yok")
 
     xg_present = sum(1 for m in dataset.recent_matches if m.xg_for is not None)
     if dataset.recent_matches and xg_present / len(dataset.recent_matches) < 0.5:
-        missing.append(f"{dataset.team.name}: xG data sparse or unavailable")
+        missing.append(f"{dataset.team.name}: xG verisi az veya mevcut değil")
 
     return missing
 
@@ -75,9 +75,9 @@ class DataIntelligenceLayer:
         missing = _assess_team_completeness(home_data, self._min_matches)
         missing += _assess_team_completeness(away_data, self._min_matches)
         if h2h is None or not h2h.matches:
-            missing.append("no head-to-head history available")
+            missing.append("iki takım arasında geçmiş karşılaşma (H2H) verisi yok")
         if not odds:
-            missing.append("no market/odds data available (not required for prediction)")
+            missing.append("piyasa/oran verisi yok (tahmin için zorunlu değil)")
 
         return MatchRawDataset(
             fixture=fixture,
