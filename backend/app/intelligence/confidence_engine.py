@@ -55,18 +55,18 @@ def build_confidence_report(
     if critical_flags:
         base_confidence = min(base_confidence, settings.sanity_min_confidence_after_contradiction * 0.6)
         warnings.append(
-            "Critical sanity issue(s) detected -- confidence has been sharply capped. "
-            "Do not present this outcome as a banker/guaranteed pick."
+            "Kritik tutarlılık sorunu tespit edildi -- güven düzeyi belirgin şekilde "
+            "sınırlandırıldı. Bu sonuç banko/garanti bir seçim olarak sunulmamalı."
         )
     elif warning_flags:
         base_confidence = min(base_confidence, settings.sanity_min_confidence_after_contradiction + 0.2)
         warnings.append(
-            "Model output diverges notably from market consensus or is based on a small "
-            "sample. Treat with reduced confidence pending review."
+            "Model çıktısı piyasa konsensüsünden belirgin şekilde ayrışıyor ya da küçük bir "
+            "örnekleme dayanıyor. İnceleme yapılana kadar azaltılmış güvenle değerlendirin."
         )
 
     if dq == DataQuality.INSUFFICIENT:
-        warnings.append("Insufficient underlying data -- treat this prediction as exploratory only.")
+        warnings.append("Temel veri yetersiz -- bu tahmini yalnızca keşfedici olarak değerlendirin.")
 
     confidence = min(settings.max_public_confidence_label, max(0.05, base_confidence))
 
