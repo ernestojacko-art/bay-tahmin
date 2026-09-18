@@ -27,7 +27,7 @@ def check_identity_consistency(dataset: MatchRawDataset) -> list[SanityFlag]:
             SanityFlag(
                 code="IDENTICAL_TEAM_IDS",
                 severity="critical",
-                message="Home and away team IDs are identical -- this fixture cannot be analyzed.",
+                message="Ev sahibi ve deplasman takım kimlikleri aynı -- bu fikstür analiz edilemez.",
             )
         )
     if dataset.home_team_data.team.team_id != fixture.home_team.team_id:
@@ -35,7 +35,7 @@ def check_identity_consistency(dataset: MatchRawDataset) -> list[SanityFlag]:
             SanityFlag(
                 code="HOME_TEAM_ID_MISMATCH",
                 severity="critical",
-                message="Home team dataset does not match the fixture's home team ID.",
+                message="Ev sahibi takım verisi, fikstürün ev sahibi takım kimliğiyle eşleşmiyor.",
             )
         )
     if dataset.away_team_data.team.team_id != fixture.away_team.team_id:
@@ -43,7 +43,7 @@ def check_identity_consistency(dataset: MatchRawDataset) -> list[SanityFlag]:
             SanityFlag(
                 code="AWAY_TEAM_ID_MISMATCH",
                 severity="critical",
-                message="Away team dataset does not match the fixture's away team ID.",
+                message="Deplasman takım verisi, fikstürün deplasman takım kimliğiyle eşleşmiyor.",
             )
         )
     home_league = dataset.home_team_data.team.league_id
@@ -56,7 +56,7 @@ def check_identity_consistency(dataset: MatchRawDataset) -> list[SanityFlag]:
             SanityFlag(
                 code="LEAGUE_MISMATCH",
                 severity="warning",
-                message="Home/away teams are associated with different leagues than the fixture's league_id.",
+                message="Ev sahibi/deplasman takımları, fikstürün lig kimliğinden farklı liglerle ilişkilendirilmiş.",
             )
         )
     return flags
@@ -71,8 +71,8 @@ def check_sample_size(home: TeamStrengthProfile, away: TeamStrengthProfile) -> l
                     code="SMALL_SAMPLE_SIZE",
                     severity="warning",
                     message=(
-                        f"{profile.team_name}: only {profile.matches_considered} recent matches "
-                        "available -- form/strength estimate is statistically weak."
+                        f"{profile.team_name}: yalnızca {profile.matches_considered} son maç "
+                        "mevcut -- form/güç tahmini istatistiksel olarak zayıf."
                     ),
                 )
             )
@@ -119,11 +119,11 @@ def check_market_contradiction(
                     code="MODEL_MARKET_DIVERGENCE",
                     severity=severity,
                     message=(
-                        f"Model vs market disagreement on '{label}': model={model_p:.2f}, "
-                        f"market-implied={market_p:.2f} (divergence={divergence:.2f}). "
-                        "This outcome must not be presented as a high-confidence banker "
-                        "until the discrepancy is reviewed (home/away mixup, calibration, "
-                        "or a genuine market inefficiency)."
+                        f"Model ile piyasa '{label}' konusunda uyuşmuyor: model={model_p:.2f}, "
+                        f"piyasa-ima={market_p:.2f} (fark={divergence:.2f}). "
+                        "Bu tutarsızlık incelenene kadar (ev/deplasman karışıklığı, kalibrasyon "
+                        "ya da gerçek bir piyasa verimsizliği) bu sonuç yüksek güvenli bir banko "
+                        "olarak sunulmamalıdır."
                     ),
                 )
             )
