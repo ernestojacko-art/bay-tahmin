@@ -86,7 +86,7 @@ class TeamStrengthEngine:
         avg_ga = _weighted_goal_rate(matches, "goals_against", w)
 
         if avg_gf is None or avg_ga is None:
-            notes.append("Insufficient recent match history; strength profile uses neutral priors.")
+            notes.append("Yetersiz son maç geçmişi; güç profili nötr varsayılan değerler kullanıyor.")
             attack = 0.5
             defense = 0.5
         else:
@@ -96,7 +96,7 @@ class TeamStrengthEngine:
 
         recent_form = _form_score(matches, n=5)
         if recent_form is None:
-            notes.append("No recent results available for form score; defaulted to neutral 0.5.")
+            notes.append("Form skoru için son sonuç verisi yok; nötr 0.5 varsayıldı.")
             recent_form = 0.5
 
         home_matches = dataset.recent_matches_home
@@ -115,7 +115,7 @@ class TeamStrengthEngine:
                 ),
             )
         else:
-            notes.append("No home-specific match sample; home strength omitted.")
+            notes.append("Ev sahibine özel maç örneklemi yok; ev sahibi gücü hesaba katılmadı.")
 
         if away_matches:
             away_gf = _weighted_goal_rate(away_matches, "goals_for", w) or 0.0
@@ -129,7 +129,7 @@ class TeamStrengthEngine:
                 ),
             )
         else:
-            notes.append("No away-specific match sample; away strength omitted.")
+            notes.append("Deplasmana özel maç örneklemi yok; deplasman gücü hesaba katılmadı.")
 
         opponent_strength = _opponent_strength_adjustment(matches)
         # Opponent-adjusted performance: reward beating strong opponents,
@@ -149,7 +149,7 @@ class TeamStrengthEngine:
             overall_form_component = (blend * recent_form) + ((1 - blend) * season_component)
         else:
             overall_form_component = recent_form
-            notes.append("No season standing available; overall uses recent form only.")
+            notes.append("Sezon sıralaması verisi yok; genel değerlendirme sadece son form üzerinden yapıldı.")
 
         overall = min(
             1.0,
@@ -169,7 +169,7 @@ class TeamStrengthEngine:
         else:
             quality = DataQuality.INSUFFICIENT
             notes.append(
-                "Fewer than 3 recent matches available -- strength profile confidence is very low."
+                "3'ten az son maç mevcut -- güç profili güveni çok düşük."
             )
 
         return TeamStrengthProfile(
