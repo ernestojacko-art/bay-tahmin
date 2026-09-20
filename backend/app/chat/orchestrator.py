@@ -24,7 +24,7 @@ _MATCH_INTENT_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 _DAILY_SURPRISE_PATTERNS = re.compile(
-    r"(?=.*(?:sürpriz|iy/ms|ht/ft))(?=.*(?:\b5\b|beş))(?=.*(?:maç|öner))",
+    r"(?=.*(?:sürpriz|iy/ms|ht/ft))(?=.*(?:\d+|beş|birkaç|bazı))(?=.*(?:maç|öner))",
     re.IGNORECASE,
 )
 # Sadece fikstür listesi istenen, sürpriz/İY-MS analizi GEREKTİRMEYEN genel sorular
