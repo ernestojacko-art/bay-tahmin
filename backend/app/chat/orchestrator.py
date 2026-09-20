@@ -24,8 +24,7 @@ _MATCH_INTENT_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 _DAILY_SURPRISE_PATTERNS = re.compile(
-    r"(bugün|yarın|günün|yarının).{0,80}(sürpriz|iy/ms|ht/ft).{0,80}(5|beş|maç|öner)|"
-    r"(sürpriz|iy/ms|ht/ft).{0,80}(5|beş).{0,80}(maç|öner)",
+    r"(?=.*(?:sürpriz|iy/ms|ht/ft))(?=.*(?:\b5\b|beş))(?=.*(?:maç|öner))",
     re.IGNORECASE,
 )
 # Sadece fikstür listesi istenen, sürpriz/İY-MS analizi GEREKTİRMEYEN genel sorular
@@ -45,6 +44,18 @@ def _looks_like_match_question(message: str) -> bool:
 
 def _looks_like_daily_surprise_request(message: str) -> bool:
     return bool(_DAILY_SURPRISE_PATTERNS.search(message))
+
+
+_RELIABLE_PATTERNS = re.compile(
+    r"(?=.*(?:güven|banko|emin))(?=.*(?:maç|tahmin))|"
+    r"(?=.*en iyi)(?=.*tahmin)|"
+    r"(?=.*sırala)(?=.*maç)",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_reliable_request(message: str) -> bool:
+    return bool(_RELIABLE_PATTERNS.search(message)) and "sürpriz" not in message.lower()
 
 
 def _looks_like_fixture_list_request(message: str) -> bool:
@@ -86,14 +97,30 @@ def _within_evening_window(fixtures: list[Fixture], target: date) -> list[Fixtur
 
 
 # Bilinen üst düzey Avrupa ligleri/kupaları -- 5DollarFootballAPI'nin verdiği
-# league_name alanına göre eşleştirilir. Bu liste kapsamlı değildir; API'nin
-# döndürdüğü tam isimlerle eşleşmeyen bir lig burada yanlışlıkla dışarıda
-# kalabilir -- bu bilinen bir sınırlamadır (ayrı bir "ülke/bölge" alanı yok).
+# league_name alanına göre eşleştirilir. ÖNEMLİ: "Premier League", "Serie A",
+# "Champions League" gibi isimler Avrupa'ya özel DEĞİLDİR -- Nijerya, Moğolistan
+# gibi ülkelerin de kendi "Premier League"i, Brezilya'nın "Serie A"sı, AFC'nin
+# (Asya) kendi "Champions League"i vardır. Bu yüzden kıtasal kupalar UEFA öneki
+# gerektirir, ve isim çakışması riski taşıyan liglerin isimleri bilinen
+# Avrupa-dışı ülke adlarını İÇERMEDİĞİ sürece kabul edilir.
 _TOP_EUROPEAN_LEAGUE_HINTS = (
-    "premier league", "la liga", "laliga", "serie a", "bundesliga", "ligue 1",
-    "champions league", "europa league", "conference league", "eredivisie",
-    "primeira liga", "süper lig", "super lig", "premiership", "jupiler",
+    "uefa champions league", "uefa europa league", "uefa conference league",
+    "english premier league", "la liga", "laliga", "italian serie a",
+    "bundesliga", "ligue 1", "eredivisie", "primeira liga", "süper lig",
+    "super lig", "scottish premiership", "jupiler",
 )
+# "Premier League" ve "Serie A" gibi çakışma riski taşıyan ama ülke önekiyle
+# gelmeyebilecek isimler için: bu ülke isimlerinden biri geçiyorsa KESİNLİKLE
+# Avrupa değildir, ne kadar "premier league"/"serie a" içerirse içersin.
+_NON_EUROPEAN_COUNTRY_HINTS = (
+    "nigeria", "ghana", "kenya", "zambia", "rwanda", "tanzania", "uganda",
+    "india", "bangladesh", "mongolia", "brazil", "brasil", "ecuador", "chile",
+    "bolivia", "venezuela", "colombia", "paraguay", "china", "korea", "japan",
+    "thailand", "vietnam", "indonesia", "malaysia", "afc", "caf", "concacaf",
+    "conmebol", "egypt", "morocco", "tunisia", "algeria", "saudi", "qatar",
+    "uae", "iran", "iraq", "australia",
+)
+_AMBIGUOUS_HINTS = ("premier league", "serie a", "champions league", "super league")
 
 _EUROPEAN_LEAGUE_REQUEST_PATTERN = re.compile(r"avrupa|üst lig|büyük lig|top lig", re.IGNORECASE)
 
@@ -106,7 +133,17 @@ _SURPRISE_CONTINUATION_PATTERN = re.compile(
 
 def _is_top_european_league(fixture: Fixture) -> bool:
     name = (fixture.league_name or "").lower()
-    return any(hint in name for hint in _TOP_EUROPEAN_LEAGUE_HINTS)
+    if not name:
+        return False
+    if any(country in name for country in _NON_EUROPEAN_COUNTRY_HINTS):
+        return False
+    if any(hint in name for hint in _TOP_EUROPEAN_LEAGUE_HINTS):
+        return True
+    # "premier league"/"serie a" gibi belirsiz isimler, yukarıdaki ülke
+    # kontrolünden geçtiyse (yani bilinen bir Avrupa-dışı ülke adı yoksa)
+    # kabul edilir -- ama bu %100 garantili değildir (API'de ülke adı hiç
+    # geçmiyor olabilir), bu yüzden hâlâ bir sınırlama olarak kalır.
+    return any(hint in name for hint in _AMBIGUOUS_HINTS)
 
 
 def _wants_european_leagues(message: str) -> bool:
@@ -133,6 +170,20 @@ def _favorite_label(prediction: MatchPrediction) -> str:
         prediction.home_team.team_name: ox.home_win,
         "Beraberlik": ox.draw,
         prediction.away_team.team_name: ox.away_win,
+    }
+    return max(values, key=values.get)
+
+
+def _market_favorite_label(prediction: MatchPrediction) -> str | None:
+    """Piyasanın favorisi -- modelin favorisiyle KARIŞTIRILMAMALI."""
+    mc = prediction.market_comparison
+    if not mc.market_available or mc.market_implied is None:
+        return None
+    mi = mc.market_implied
+    values = {
+        prediction.home_team.team_name: mi.home_win,
+        "Beraberlik": mi.draw,
+        prediction.away_team.team_name: mi.away_win,
     }
     return max(values, key=values.get)
 
@@ -195,13 +246,21 @@ def _narrate_summary(prediction: MatchPrediction) -> str:
     ox = prediction.one_x_two
     eg = prediction.expected_goals
     favorite = _favorite_label(prediction)
+    market_favorite = _market_favorite_label(prediction)
 
     lines = [
-        f"Bu maç için ana görüşüm: {favorite}.",
+        f"Bu maç için ana görüşüm (model): {favorite}.",
+    ]
+    if market_favorite is not None and market_favorite != favorite:
+        lines.append(
+            f"Not: Bahis piyasası burada {market_favorite}'ı favori görüyor -- yani model "
+            "ile piyasa bu maçta ayrışıyor, bu da onu potansiyel bir sürpriz adayı yapıyor."
+        )
+    lines += [
         "",
         "Tahmin özeti:",
         f"• Maç sonucu: {prediction.home_team.team_name} %{ox.home_win*100:.1f} | Beraberlik %{ox.draw*100:.1f} | {prediction.away_team.team_name} %{ox.away_win*100:.1f}",
-        f"• En güçlü sonuç eğilimi: {favorite}",
+        f"• En güçlü sonuç eğilimi (model): {favorite}",
         f"• Beklenen gol projeksiyonu: {eg.home_xg:.2f} - {eg.away_xg:.2f} (toplam {eg.total_xg:.2f})",
         f"• Karşılıklı gol olur: %{prediction.btts_yes_probability*100:.1f}",
     ]
@@ -240,6 +299,62 @@ class ChatOrchestrator:
         self._football_expert = football_expert
         self._llm_client = llm_client
         self._context_store = context_store
+
+    async def _reliable_matches(self, message: str, exclude_match_ids: frozenset[str] = frozenset()) -> tuple[str, list[str]]:
+        """§5 PREDICTION / TEST 10: 'en güvendiğin tahmin' -- sürpriz değil,
+        modelin en yüksek GÜVENLE (confidence) durduğu gerçek maçları sıralar."""
+        target = _target_date_from_message(message)
+        evening = _is_evening_request(message)
+        european_only = _wants_european_leagues(message)
+
+        provider = self._analysis_service._provider
+        fixtures = await provider.get_fixtures(target)
+        fixtures = _future_scheduled_fixtures(fixtures)
+        if evening:
+            fixtures = _within_evening_window(fixtures, target)
+        if european_only:
+            fixtures = [f for f in fixtures if _is_top_european_league(f)]
+        if exclude_match_ids:
+            fixtures = [f for f in fixtures if f.match_id not in exclude_match_ids]
+        fixtures = fixtures[:40]  # bkz. _daily_surprises: rate-limit koruması
+
+        ranked = []
+        for fixture in fixtures:
+            try:
+                prediction = await self._analysis_service.analyze_match(fixture.match_id)
+            except BayTahminError:
+                continue
+            if not prediction.market_comparison.market_available:
+                continue  # piyasası açık olmayan maç banko olarak sunulamaz
+            ranked.append((prediction.confidence.confidence, fixture, prediction))
+
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        ranked = ranked[:5]
+        if not ranked:
+            return (
+                f"{target.isoformat()} için piyasası açık ve yeterli veri kalitesine sahip "
+                "gerçek bir maç bulamadım.",
+                [],
+            )
+
+        league_label = " üst düzey Avrupa liglerinden" if european_only else ""
+        lines = [f"{target.isoformat()} için{league_label} en güvenilir gerçek maçlar:"]
+        for index, (conf, fixture, prediction) in enumerate(ranked, 1):
+            kickoff_local = fixture.kickoff.astimezone(ISTANBUL).strftime("%H:%M")
+            fav = _favorite_label(prediction)
+            lines.append(
+                f"{index}. {fixture.home_team.name} - {fixture.away_team.name} ({kickoff_local})\n"
+                f"   Model favorisi: {fav} | Güven: %{conf*100:.1f} | Risk: {_risk_tr(prediction.confidence.risk)} | "
+                f"Veri kalitesi: {_quality_tr(prediction.data_quality)}"
+            )
+        lines.append("")
+        lines.append(
+            "Bu sıralama, piyasası açık gerçek maçların Cloud Intelligence Engine tarafından "
+            "analiz edilip güven düzeyine göre sıralanmasıyla oluşturuldu. 'Banko' değil, "
+            "modelin göreceli güven sıralamasıdır -- garanti bir sonuç anlamına gelmez."
+        )
+        shown_ids = [fixture.match_id for (_, fixture, _) in ranked]
+        return "\n".join(lines), shown_ids
 
     async def _daily_surprises(self, message: str, exclude_match_ids: frozenset[str] = frozenset()) -> tuple[str, list[str]]:
         target = _target_date_from_message(message)
@@ -393,6 +508,25 @@ class ChatOrchestrator:
                 )
             except Exception:
                 reply = "Bugünün gerçek maçları için şu anda sürpriz analizi üretilemedi. Veri sağlayıcısındaki geçici sınır nedeniyle genel sohbet yanıtına düşürmedim."
+                context.add_turn("assistant", reply, self._settings.chat_context_max_turns)
+                return ChatResponse(
+                    session_id=session_id, reply=reply, intent="fallback", match_id=None,
+                    used_prediction_engine=False, grounded_in_analysis=False,
+                )
+
+        if _looks_like_reliable_request(message):
+            try:
+                reply, shown_ids = await self._reliable_matches(message)
+                context.previous_intent = "daily_surprises"  # aynı devam mekanizmasını paylaşır
+                context.last_surprise_query = message
+                context.last_surprise_match_ids = shown_ids
+                context.add_turn("assistant", reply, self._settings.chat_context_max_turns)
+                return ChatResponse(
+                    session_id=session_id, reply=reply, intent="match_analysis",
+                    match_id=None, used_prediction_engine=True, grounded_in_analysis=True,
+                )
+            except Exception:
+                reply = "Bugünün gerçek maçları için şu anda güvenilirlik sıralaması üretilemedi."
                 context.add_turn("assistant", reply, self._settings.chat_context_max_turns)
                 return ChatResponse(
                     session_id=session_id, reply=reply, intent="fallback", match_id=None,
