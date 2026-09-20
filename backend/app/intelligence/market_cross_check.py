@@ -19,7 +19,15 @@ from app.schemas.prediction import MarketComparison, OneXTwoProbabilities
 
 def _extract_1x2_selections(markets: list[OddsMarket]) -> dict[str, float] | None:
     for market in markets:
-        if market.market_name.upper() in ("1X2", "MATCH ODDS", "MATCH RESULT"):
+        name = (market.market_name or "").lower()
+        # İlk yarıya özel piyasalar (örn. "İlk Yarı Maç Sonucu", "İlk Yarı 1X2")
+        # maç sonucu (FT) piyasası DEĞİLDİR -- bunları hariç tutuyoruz.
+        if "ilk yarı" in name or "i̇lk yarı" in name or "half" in name or "1. yarı" in name or "ht" == name.strip()[:2]:
+            continue
+        # Gerçek veri kaynağı market adını tam olarak "1X2" değil, örn.
+        # "Maç Sonucu 1X2 (Bet 365)" şeklinde döndürüyor -- bu yüzden tam
+        # eşleşme yerine alt dize (substring) kontrolü yapıyoruz.
+        if "1x2" in name or "match odds" in name or "match result" in name or "maç sonucu" in name:
             return {s.label: s.price for s in market.selections}
     return None
 
