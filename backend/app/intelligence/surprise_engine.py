@@ -85,17 +85,21 @@ def rank_surprises(
     if not market_comparison.market_available or market_comparison.market_implied is None:
         return []
 
-    # İY/MS (HT/FT) is a COMBINED market that 5DollarFootballAPI does not
-    # expose as its own line item -- it only ever provides a separate
-    # "İlk Yarı Maç Sonucu" (half-time-only 1X2) market alongside the
-    # full-time one. An HT/FT surprise claim therefore additionally
-    # requires that a real half-time market exists for this fixture;
-    # otherwise there is genuinely no market-side signal for the
-    # half-time leg of the combination at all, and presenting a confident
-    # İY/MS pick would not be grounded in anything real (spec section 18:
-    # never fabricate a market that doesn't exist for this fixture).
-    if not any("i̇lk yarı maç sonucu" in (m.market_name or "").lower() or "ilk yarı maç sonucu" in (m.market_name or "").lower() for m in odds_markets):
-        return []
+    # İY/MS (HT/FT) is a COMBINED market that 5DollarFootballAPI rarely
+    # exposes as its own line item -- it usually only provides the
+    # full-time 1X2 market. Requiring a literal half-time market before
+    # ever showing an İY/MS surprise made the whole feature almost always
+    # empty in practice. Instead: if no dedicated half-time market exists,
+    # we still rank using the (real) full-time market divergence, but
+    # clearly disclose that the half-time leg is statistically modeled,
+    # not sourced from a live half-time betting line (spec 18/27: don't
+    # claim a market exists when it doesn't -- but disclosing this is
+    # different from refusing to answer at all).
+    has_ht_market = any(
+        "i̇lk yarı maç sonucu" in (m.market_name or "").lower()
+        or "ilk yarı maç sonucu" in (m.market_name or "").lower()
+        for m in odds_markets
+    )
 
     weights = _Weights()
     dq_score = min(
@@ -163,7 +167,10 @@ def rank_surprises(
         candidates.append(
             SurpriseCandidate(
                 combination=combo,
-                description=_DESCRIPTIONS.get(combo, f"İlk yarı/maç sonucu değişimi: {combo}"),
+                description=(
+                    _DESCRIPTIONS.get(combo, f"İlk yarı/maç sonucu değişimi: {combo}")
+                    + ("" if has_ht_market else " (İlk yarı sonucu istatistiksel modelden tahmin edilmiştir; bu maç için ayrı bir İlk Yarı Maç Sonucu piyasası bulunamadı.)")
+                ),
                 plausibility=round(plausibility, 4),
                 upset_potential=round(market_divergence, 4),
                 tactical_support=round(tactical_support, 4),
