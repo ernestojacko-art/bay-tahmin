@@ -47,6 +47,10 @@ class LLMClient:
                 return await asyncio.wait_for(
                     self._call_anthropic(system_prompt, user_message), timeout=timeout_seconds
                 )
+            if self._settings.llm_provider in ("gemini", "google"):
+                return await asyncio.wait_for(
+                    self._call_gemini(system_prompt, user_message), timeout=timeout_seconds
+                )
             logger.warning("Unsupported llm_provider '%s'; falling back.", self._settings.llm_provider)
             return None
         except Exception:  # noqa: BLE001 - any failure must degrade gracefully
@@ -73,4 +77,29 @@ class LLMClient:
             data = resp.json()
             parts = [block.get("text", "") for block in data.get("content", []) if block.get("type") == "text"]
             text = "\n".join(p for p in parts if p).strip()
+            return text or None
+
+    async def _call_gemini(self, system_prompt: str, user_message: str) -> Optional[str]:
+        # Google Generative Language API (Gemini). settings.llm_model should
+        # be a bare model id, e.g. "gemini-2.5-flash" or "gemini-2.0-flash".
+        model = self._settings.llm_model or "gemini-2.5-flash"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        payload = {
+            "system_instruction": {"parts": [{"text": system_prompt}]},
+            "contents": [{"role": "user", "parts": [{"text": user_message}]}],
+            "generationConfig": {"maxOutputTokens": 600},
+        }
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                url,
+                params={"key": self._settings.llm_api_key or ""},
+                json=payload,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            candidates = data.get("candidates") or []
+            if not candidates:
+                return None
+            parts = candidates[0].get("content", {}).get("parts", [])
+            text = "\n".join(p.get("text", "") for p in parts if p.get("text")).strip()
             return text or None
