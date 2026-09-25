@@ -1,16 +1,10 @@
 """
-Optional LLM client wrapper.
+Thin async LLM client (spec section 12: "LLM'İN ROLÜ").
 
-The Football Expert Chat Agent can optionally use an external LLM to make
-its natural-language phrasing richer. This is entirely optional and the
-system MUST keep working (spec section 16: "LLM yavaşlarsa veya
-başarısız olursa sistem tamamen çöküp 'ulaşılamadı' dememeli") when:
-  * no LLM is configured (`llm_provider = "none"`), or
-  * the LLM call fails or times out.
-
-In both cases `generate()` returns `None`, and callers fall back to the
-structured, template-based response built directly from Intelligence
-Engine output.
+The LLM is used ONLY to phrase/explain answers in natural Turkish -- it
+never invents fixtures, dates, odds, or probabilities. If no provider is
+configured, or the call fails for any reason, callers fall back to a
+structured, template-based response instead.
 """
 from __future__ import annotations
 
@@ -31,7 +25,7 @@ class LLMClient:
 
     @property
     def is_configured(self) -> bool:
-        return self._settings.llm_provider != "none" and bool(self._settings.llm_api_key)
+        return bool(self._settings.llm_provider != "none" and self._settings.llm_api_key)
 
     async def generate(self, system_prompt: str, user_message: str, timeout_seconds: float = 8.0) -> Optional[str]:
         """
@@ -82,6 +76,11 @@ class LLMClient:
     async def _call_gemini(self, system_prompt: str, user_message: str) -> Optional[str]:
         # Google Generative Language API (Gemini). settings.llm_model should
         # be a bare model id, e.g. "gemini-2.5-flash" or "gemini-2.0-flash".
+        # NOTE: Google's newer "AQ." prefixed Auth Keys (replacing the older
+        # "AIzaSy..." Standard keys) are unreliable when passed as a
+        # `?key=` query parameter on some accounts/regions -- the documented,
+        # more robust way is the `x-goog-api-key` header, which is what we
+        # use here.
         model = self._settings.llm_model or "gemini-2.5-flash"
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         payload = {
@@ -92,7 +91,7 @@ class LLMClient:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
                 url,
-                params={"key": self._settings.llm_api_key or ""},
+                headers={"x-goog-api-key": self._settings.llm_api_key or "", "content-type": "application/json"},
                 json=payload,
             )
             resp.raise_for_status()
