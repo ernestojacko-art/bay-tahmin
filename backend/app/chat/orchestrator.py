@@ -42,6 +42,17 @@ def _looks_like_match_question(message: str) -> bool:
     return bool(_MATCH_INTENT_PATTERNS.search(message))
 
 
+_WHY_PATTERNS = re.compile(
+    r"neden|niye|nicin|niçin|gerekçe|sebep|açıkla|nasıl.{0,15}düşün|hangi veri|"
+    r"dayanağ",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_why_question(message: str) -> bool:
+    return bool(_WHY_PATTERNS.search(message))
+
+
 def _looks_like_daily_surprise_request(message: str) -> bool:
     return bool(_DAILY_SURPRISE_PATTERNS.search(message))
 
@@ -591,9 +602,7 @@ class ChatOrchestrator:
                     used_prediction_engine=False, grounded_in_analysis=False,
                 )
 
-        wants_match_analysis = bool(match_id) or (
-            context.active_match_id is not None and _looks_like_match_question(message)
-        )
+        wants_match_analysis = bool(match_id) or context.active_match_id is not None
         if wants_match_analysis and effective_match_id:
             return await self._handle_match_question(session_id, context, message, effective_match_id)
 
@@ -615,7 +624,10 @@ class ChatOrchestrator:
             else:
                 prediction = context.latest_analysis
 
-            reply = _build_structured_match_reply(message, prediction)
+            if _looks_like_why_question(message):
+                reply = await self._explain_prediction(message, prediction)
+            else:
+                reply = _build_structured_match_reply(message, prediction)
             context.previous_intent = "match_analysis"
             context.add_turn("assistant", reply, self._settings.chat_context_max_turns)
             return ChatResponse(
@@ -631,6 +643,71 @@ class ChatOrchestrator:
             session_id=session_id, reply=reply, intent="fallback", match_id=match_id,
             used_prediction_engine=False, grounded_in_analysis=False,
         )
+
+    async def _explain_prediction(self, message: str, prediction: MatchPrediction) -> str:
+        """
+        "Neden böyle düşünüyorsun?" tarzı sorularda, sabit bir şablon yerine
+        LLM'e modelin GERÇEK sayılarını (1X2, beklenen gol, güven, veri
+        kalitesi, favori/piyasa ayrışması) verip bunları doğal, akıcı bir
+        Türkçe gerekçeye dönüştürmesini istiyoruz. LLM burada YENİ sayı
+        üretmiyor -- sadece verilen gerçek sayıları yorumluyor (spec 12/28).
+        LLM yoksa ya da başarısız olursa, sayılara dayalı sabit ama daha
+        ayrıntılı bir gerekçeye düşer (asla uydurmaz).
+        """
+        ox = prediction.one_x_two
+        eg = prediction.expected_goals
+        favorite = _favorite_label(prediction)
+        market_favorite = _market_favorite_label(prediction)
+        c = prediction.confidence
+
+        facts = (
+            f"Maç: {prediction.home_team.team_name} - {prediction.away_team.team_name}. "
+            f"Modelin MS olasılıkları: {prediction.home_team.team_name} %{ox.home_win*100:.1f}, "
+            f"Beraberlik %{ox.draw*100:.1f}, {prediction.away_team.team_name} %{ox.away_win*100:.1f}. "
+            f"Modelin favorisi: {favorite}. "
+            f"Piyasanın favorisi: {market_favorite if market_favorite else 'piyasa verisi yok'}. "
+            f"Beklenen gol (xG modeli): ev sahibi {eg.home_xg:.2f}, deplasman {eg.away_xg:.2f}. "
+            f"Ev sahibi takım gücü bileşenleri: hücum {prediction.home_team.attack:.2f}, "
+            f"savunma {prediction.home_team.defense:.2f}, form {prediction.home_team.form:.2f} (0-1 arası normalize). "
+            f"Deplasman takım gücü bileşenleri: hücum {prediction.away_team.attack:.2f}, "
+            f"savunma {prediction.away_team.defense:.2f}, form {prediction.away_team.form:.2f}. "
+            f"Güven düzeyi: %{c.confidence*100:.1f}, risk: {_risk_tr(c.risk)}, "
+            f"veri kalitesi: {_quality_tr(c.data_quality)}, model kendi içi uyum: %{c.model_agreement*100:.1f}."
+        )
+        prompt = (
+            f"Kullanıcı şunu soruyor: \"{message}\"\n\n"
+            f"Aşağıdaki GERÇEK model verilerini kullanarak, bu tahminin ARKASINDAKİ GEREKÇEYİ "
+            "doğal, akıcı, kendinden emin bir futbol uzmanı üslubuyla Türkçe açıkla. "
+            "Sayıları olduğu gibi kullan, yeni sayı uydurma. 3-5 cümle yeterli.\n\n"
+            f"VERİLER:\n{facts}"
+        )
+        llm_reply = await self._llm_client.generate(
+            "Sen BAY TAHMİN'in futbol analiz motorusun. Sana verilen gerçek model "
+            "çıktılarını, kullanıcının anlayacağı doğal bir dille gerekçelendiriyorsun. "
+            "Asla yeni istatistik, oran ya da olasılık uydurmuyorsun -- sadece verilenleri yorumluyorsun.",
+            prompt,
+        )
+        if llm_reply:
+            return llm_reply
+
+        # LLM yoksa/başarısızsa: sabit ama sayı-temelli, gerçek bir gerekçe.
+        lines = [f"Modelin {favorite} yönündeki görüşünün arkasındaki temel etkenler:"]
+        if eg.home_xg != eg.away_xg:
+            stronger = prediction.home_team.team_name if eg.home_xg > eg.away_xg else prediction.away_team.team_name
+            lines.append(
+                f"• Beklenen gol (xG) modeli {stronger} lehine: {eg.home_xg:.2f} - {eg.away_xg:.2f}."
+            )
+        lines.append(
+            f"• Takım gücü bileşenleri (hücum/savunma/form) bu yönü destekliyor "
+            f"(veri kalitesi: {_quality_tr(prediction.data_quality)})."
+        )
+        if market_favorite and market_favorite != favorite:
+            lines.append(
+                f"• Not: Piyasa burada farklı düşünüyor ({market_favorite} favori) -- "
+                "bu ayrışma modelin kendi bağımsız hesaplamasından kaynaklanıyor, piyasayı taklit etmiyor."
+            )
+        lines.append(f"• Genel güven düzeyi: %{c.confidence*100:.1f} ({_risk_tr(c.risk)} risk).")
+        return "\n".join(lines)
 
     async def _handle_general_question(self, session_id: str, context: MatchContext, message: str) -> ChatResponse:
         answer = await self._football_expert.answer(message)
