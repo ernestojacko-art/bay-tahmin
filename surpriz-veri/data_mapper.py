@@ -1,20 +1,15 @@
 """
 SÜRPRİZ VERİ - Data Mapper
 
-5DollarFootballAPI'den gelen ham veriyi
+5DollarFootballAPI'den gelen gerçek fixture ve odds verisini
 Sürpriz Veri motorunun MatchRecord modeline dönüştürür.
 
-Bu katman:
-- Opening odds
-- Closing odds
-- Odds movement
-- Market profile
-- Kickoff time
-
-verilerini birbirinden ayrı tutar.
-
-API response yapısı değişirse yalnızca bu katmanın
-güncellenmesi hedeflenir.
+Önemli:
+- Opening odds ayrı tutulur.
+- Closing odds ayrı tutulur.
+- Opening -> Closing movement ayrıca hesaplanır.
+- Market profili ayrıca tutulur.
+- Mevcut Bay Tahmin sistemine dokunmaz.
 """
 
 from typing import Any, Dict, List, Optional
@@ -31,9 +26,7 @@ def _first_value(
     data: Dict[str, Any],
     *keys: str,
 ) -> Any:
-    """
-    Bir sözlükte verilen anahtarlardan ilk bulunan değeri döndürür.
-    """
+    """Verilen anahtarlar içinden bulunan ilk değeri döndürür."""
 
     for key in keys:
         if key in data and data[key] is not None:
@@ -45,9 +38,7 @@ def _first_value(
 def _float_or_none(
     value: Any,
 ) -> Optional[float]:
-    """
-    Değeri güvenli şekilde float'a dönüştürür.
-    """
+    """Değeri güvenli şekilde float'a çevirir."""
 
     if value is None:
         return None
@@ -61,9 +52,7 @@ def _float_or_none(
 def _extract_team_name(
     team_data: Any,
 ) -> Optional[str]:
-    """
-    Farklı olası takım response yapılarını destekler.
-    """
+    """5DollarFootballAPI team objesinden takım adını çıkarır."""
 
     if isinstance(team_data, str):
         return team_data
@@ -74,7 +63,6 @@ def _extract_team_name(
     value = _first_value(
         team_data,
         "name",
-        "team_name",
         "short_name",
         "display_name",
     )
@@ -85,79 +73,51 @@ def _extract_team_name(
     return str(value)
 
 
-def _extract_odds_from_mapping(
-    data: Dict[str, Any],
+def _extract_odds_stage(
+    odds_data: Dict[str, Any],
+    stage: str,
 ) -> Odds:
     """
-    Bir odds sözlüğünden home/draw/away değerlerini çıkarır.
+    1X2 odds içinden opening veya closing değerini alır.
+
+    Beklenen yapı:
+
+    odds:
+      1x2:
+        opening:
+          home
+          draw
+          away
+        closing:
+          home
+          draw
+          away
     """
 
-    home = _first_value(
-        data,
-        "home",
-        "1",
-        "home_odds",
-    )
+    if not isinstance(odds_data, dict):
+        return Odds()
 
-    draw = _first_value(
-        data,
-        "draw",
-        "x",
-        "X",
-        "draw_odds",
-    )
+    one_x_two = odds_data.get("1x2")
 
-    away = _first_value(
-        data,
-        "away",
-        "2",
-        "away_odds",
-    )
+    if not isinstance(one_x_two, dict):
+        return Odds()
+
+    stage_data = one_x_two.get(stage)
+
+    if not isinstance(stage_data, dict):
+        return Odds()
 
     return Odds(
-        home=_float_or_none(home),
-        draw=_float_or_none(draw),
-        away=_float_or_none(away),
-    )
-
-
-def _extract_odds(
-    data: Dict[str, Any],
-    state: str,
-) -> Odds:
-    """
-    Opening veya closing odds bilgisini bulmaya çalışır.
-
-    Önce state'e ait nested yapı aranır.
-    Bulunamazsa doğrudan response içindeki alanlar kontrol edilir.
-    """
-
-    possible_keys = {
-        "opening": (
-            "opening",
-            "opening_odds",
-            "open",
-            "open_odds",
+        home=_float_or_none(
+            stage_data.get("home")
         ),
-        "closing": (
-            "closing",
-            "closing_odds",
-            "close",
-            "close_odds",
+        draw=_float_or_none(
+            stage_data.get("draw")
         ),
-    }
-
-    nested = _first_value(
-        data,
-        *possible_keys[state],
+        away=_float_or_none(
+            stage_data.get("away")
+        ),
     )
-
-    if isinstance(nested, dict):
-        return _extract_odds_from_mapping(
-            nested
-        )
-
-    return Odds()
 
 
 def calculate_odds_movement(
@@ -165,9 +125,18 @@ def calculate_odds_movement(
     closing: Odds,
 ) -> OddsMovement:
     """
-    Opening → Closing hareketini hesaplar.
+    Opening -> Closing hareketini hesaplar.
 
-    Hareket = Closing - Opening
+    Formül:
+
+        movement = closing - opening
+
+    Örnek:
+
+        opening home = 2.10
+        closing home = 1.85
+
+        movement = -0.25
     """
 
     home = None
@@ -199,102 +168,134 @@ def calculate_odds_movement(
     )
 
 
-def _extract_market_names(
-    data: Dict[str, Any],
+def _market_name_list(
+    odds_data: Dict[str, Any],
 ) -> List[str]:
     """
-    API response içindeki market listesini mümkün olduğunca
-    genel biçimde çıkarır.
+    5DollarFootballAPI odds objesindeki market isimlerini çıkarır.
 
-    Henüz belirli bir bookmaker veya market yapısına
-    zorunlu bağımlılık oluşturmaz.
+    Örnek marketler:
+
+    1x2
+    asian_handicap
+    goal_line
+    corner_line
+    corner_asian
+    card_line
+    card_asian
+    btts
+    1x2_half
+    asian_half
+    goalline_half
+    corner_half
+    goal_line_fixed
     """
 
-    raw_markets = _first_value(
-        data,
-        "markets",
-        "available_markets",
-        "market",
-    )
-
-    if raw_markets is None:
+    if not isinstance(odds_data, dict):
         return []
 
-    if isinstance(raw_markets, list):
-        result: List[str] = []
+    return [
+        str(key)
+        for key, value in odds_data.items()
+        if isinstance(value, dict)
+    ]
 
-        for item in raw_markets:
-            if isinstance(item, str):
-                result.append(item)
 
-            elif isinstance(item, dict):
-                name = _first_value(
-                    item,
-                    "name",
-                    "market",
-                    "label",
-                    "key",
-                )
-
-                if name is not None:
-                    result.append(str(name))
-
-        return result
-
-    if isinstance(raw_markets, dict):
-        return [
-            str(key)
-            for key in raw_markets.keys()
-        ]
-
-    return [str(raw_markets)]
+def _normalize_market_name(
+    market: str,
+) -> str:
+    return (
+        market
+        .lower()
+        .strip()
+        .replace("-", "_")
+        .replace(" ", "_")
+    )
 
 
 def build_market_profile(
-    data: Dict[str, Any],
+    odds_data: Optional[Dict[str, Any]],
 ) -> MarketProfile:
     """
-    Ham response'dan MarketProfile oluşturur.
+    Gerçek API odds yapısından market profilini oluşturur.
     """
 
-    markets = _extract_market_names(data)
+    if not isinstance(odds_data, dict):
+        return MarketProfile(
+            available_markets=[],
+            market_count=0,
+            ht_ft_available=False,
+            first_half_available=False,
+            second_half_available=False,
+            over_under_available=False,
+            btts_available=False,
+            all_markets_open=False,
+        )
+
+    markets = _market_name_list(
+        odds_data
+    )
 
     normalized = [
-        market.lower().replace(" ", "_")
+        _normalize_market_name(market)
         for market in markets
     ]
 
     return MarketProfile(
         available_markets=markets,
         market_count=len(markets),
-        ht_ft_available=any(
-            "ht" in market
-            and "ft" in market
-            for market in normalized
+
+        # API'de 1X2 half-time marketi ayrı tutulur.
+        ht_ft_available=(
+            "1x2" in normalized
+            or "1x2_half" in normalized
         ),
+
         first_half_available=any(
-            "first_half" in market
-            or "1st_half" in market
-            or "half_time" in market
+            market in {
+                "1x2_half",
+                "asian_half",
+                "goalline_half",
+                "corner_half",
+            }
             for market in normalized
         ),
-        second_half_available=any(
-            "second_half" in market
-            or "2nd_half" in market
-            for market in normalized
-        ),
+
+        second_half_available=False,
+
         over_under_available=any(
-            "over" in market
-            or "under" in market
+            market in {
+                "goal_line",
+                "goal_line_fixed",
+                "goalline_half",
+            }
             for market in normalized
         ),
-        btts_available=any(
-            "btts" in market
-            or "both_teams" in market
-            for market in normalized
+
+        btts_available=(
+            "btts" in normalized
         ),
+
         all_markets_open=bool(markets),
     )
+
+
+def extract_odds_block(
+    fixture: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Fixture içindeki odds bloğunu döndürür.
+
+    /fixtures ve /fixtures/{id} cevaplarında
+    odds doğrudan fixture altında bulunabilir.
+    """
+
+    odds = fixture.get("odds")
+
+    if isinstance(odds, dict):
+        return odds
+
+    return {}
 
 
 def map_fixture_to_match_record(
@@ -302,11 +303,16 @@ def map_fixture_to_match_record(
     odds_data: Optional[Dict[str, Any]] = None,
 ) -> MatchRecord:
     """
-    API fixture + odds verisini MatchRecord'a dönüştürür.
+    5DollarFootballAPI fixture verisini MatchRecord'a dönüştürür.
 
-    Bu fonksiyon nihai analiz yapmaz.
-    Yalnızca veri standardizasyonu yapar.
+    odds_data verilirse öncelikli olarak onu kullanır.
+    Verilmezse fixture içindeki odds bloğunu kullanır.
     """
+
+    if not isinstance(fixture, dict):
+        raise ValueError(
+            "Fixture verisi dict olmalıdır."
+        )
 
     fixture_id = _first_value(
         fixture,
@@ -320,67 +326,135 @@ def map_fixture_to_match_record(
             "Fixture ID bulunamadı."
         )
 
-    home_team = _first_value(
-        fixture,
-        "home_team",
-        "home",
-        "home_name",
+    # ---------------------------------------------------------
+    # TAKIMLAR
+    # ---------------------------------------------------------
+
+    teams = fixture.get(
+        "teams",
+        {},
     )
 
-    away_team = _first_value(
-        fixture,
-        "away_team",
-        "away",
-        "away_name",
-    )
+    home_team = None
+    away_team = None
 
-    if isinstance(home_team, dict):
+    if isinstance(teams, dict):
         home_team = _extract_team_name(
-            home_team
+            teams.get("home")
         )
 
-    if isinstance(away_team, dict):
         away_team = _extract_team_name(
-            away_team
+            teams.get("away")
         )
+
+    # Fallback
+    if home_team is None:
+        home_team = _extract_team_name(
+            fixture.get("home_team")
+        )
+
+    if away_team is None:
+        away_team = _extract_team_name(
+            fixture.get("away_team")
+        )
+
+    # ---------------------------------------------------------
+    # KICKOFF
+    # ---------------------------------------------------------
 
     kickoff_time = _first_value(
         fixture,
-        "kickoff_time",
+        "kickoff_utc",
+        "kickoff_ts",
         "starting_at",
         "start_time",
-        "date",
     )
 
-    competition = _first_value(
-        fixture,
-        "competition",
+    # ---------------------------------------------------------
+    # LİG
+    # ---------------------------------------------------------
+
+    league = fixture.get(
         "league",
-        "tournament",
+        {}
     )
 
-    combined = dict(fixture)
+    competition = None
 
-    if isinstance(odds_data, dict):
-        combined.update(
-            {
-                "odds": odds_data,
-            }
+    if isinstance(league, dict):
+        competition = league.get(
+            "name"
         )
 
-    opening_source = (
-        odds_data
-        if isinstance(odds_data, dict)
-        else fixture
+    if competition is None:
+        competition = _first_value(
+            fixture,
+            "competition",
+            "league_name",
+        )
+
+    # ---------------------------------------------------------
+    # ODDS
+    # ---------------------------------------------------------
+
+    fixture_odds = extract_odds_block(
+        fixture
     )
 
-    opening = _extract_odds(
-        opening_source,
+    external_odds = (
+        odds_data
+        if isinstance(odds_data, dict)
+        else {}
+    )
+
+    # Eğer odds_data doğrudan response içindeki
+    # {"data": {"bookmakers": [...]}} şeklindeyse
+    # bookmaker odds bloğunu ayrıca çöz.
+    if "data" in external_odds:
+        data_block = external_odds.get(
+            "data"
+        )
+
+        if isinstance(data_block, dict):
+            bookmakers = data_block.get(
+                "bookmakers"
+            )
+
+            if (
+                isinstance(bookmakers, list)
+                and bookmakers
+                and isinstance(
+                    bookmakers[0],
+                    dict,
+                )
+            ):
+                bookmaker = bookmakers[0]
+
+                bookmaker_odds = bookmaker.get(
+                    "odds"
+                )
+
+                if isinstance(
+                    bookmaker_odds,
+                    dict,
+                ):
+                    external_odds = (
+                        bookmaker_odds
+                    )
+
+    # Doğrudan odds bloğu verilmişse onu kullan.
+    if external_odds:
+        source_odds = external_odds
+    else:
+        source_odds = fixture_odds
+
+    opening = _extract_odds_stage(
+        source_odds,
         "opening",
     )
 
-    closing = _extract_odds(
-        opening_source,
+    closing = _extract_odds_stage(
+        source_odds,
         "closing",
     )
 
@@ -389,38 +463,55 @@ def map_fixture_to_match_record(
         closing,
     )
 
+    # ---------------------------------------------------------
+    # MARKET PROFİLİ
+    # ---------------------------------------------------------
+
     market_profile = build_market_profile(
-        odds_data
-        if isinstance(odds_data, dict)
-        else fixture
+        source_odds
     )
 
+    # ---------------------------------------------------------
+    # MATCH RECORD
+    # ---------------------------------------------------------
+
     return MatchRecord(
-        match_id=str(fixture_id),
+        match_id=str(
+            fixture_id
+        ),
+
         home_team=str(
             home_team
             or "Bilinmeyen Ev Sahibi"
         ),
+
         away_team=str(
             away_team
             or "Bilinmeyen Deplasman"
         ),
+
         kickoff_time=(
             str(kickoff_time)
             if kickoff_time is not None
             else None
         ),
+
         competition=(
             str(competition)
             if competition is not None
             else None
         ),
+
         opening_odds=opening,
+
         closing_odds=closing,
+
         odds_movement=movement,
+
         market_profile=market_profile,
+
         metadata={
             "fixture": fixture,
-            "odds": odds_data or {},
+            "odds": source_odds,
         },
     )
