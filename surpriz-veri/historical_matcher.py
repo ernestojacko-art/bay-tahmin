@@ -20,7 +20,6 @@ from dataclasses import dataclass, field
 from typing import Dict, List
 
 from .closing_pool import build_closing_pool
-from .historical_matcher import *  # type: ignore
 from .kickoff_pool import build_kickoff_pool
 from .market_profile import build_market_profile_pool
 from .models import HistoricalMatch, MatchRecord
@@ -30,9 +29,7 @@ from .opening_pool import build_opening_pool
 
 @dataclass
 class HistoricalPools:
-    """
-    Güncel maç için oluşturulan tüm tarihsel havuzlar.
-    """
+    """Güncel maç için oluşturulan tüm tarihsel havuzlar."""
 
     opening: List[HistoricalMatch] = field(
         default_factory=list
@@ -55,9 +52,7 @@ class HistoricalPools:
     )
 
     def sizes(self) -> Dict[str, int]:
-        """
-        Her havuzdaki tarihsel maç sayısını döndürür.
-        """
+        """Her havuzdaki tarihsel maç sayısını döndürür."""
 
         return {
             "opening": len(self.opening),
@@ -76,18 +71,8 @@ def build_historical_pools(
     """
     Güncel maç için tüm bağımsız tarihsel havuzları oluşturur.
 
-    Önemli:
     Aynı tarihsel maç birden fazla havuzda bulunabilir.
-
-    Örneğin aynı maç:
-        Opening Pool
-        Closing Pool
-        Movement Pool
-
-    içerisinde ayrı ayrı kanıt olarak değerlendirilebilir.
-
-    Bu durum veri karışıklığı değildir; her havuz farklı
-    bir benzerlik boyutunu temsil eder.
+    Ancak her havuzdaki eşleşme kriteri farklıdır.
     """
 
     return HistoricalPools(
@@ -118,9 +103,7 @@ def build_historical_pools(
 def pool_matches(
     pools: HistoricalPools,
 ) -> Dict[str, List[HistoricalMatch]]:
-    """
-    Havuzları isimleriyle birlikte sözlük olarak döndürür.
-    """
+    """Havuzları isimleriyle birlikte döndürür."""
 
     return {
         "opening": pools.opening,
