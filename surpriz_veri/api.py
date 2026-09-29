@@ -12,6 +12,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import CONFIG
 from .data_mapper import map_fixture_to_match_record
 from .data_provider import FiveDollarFootballAPI, FootballAPIError
+from .ai_analysis import build_ai_note, _team_form
+from .similar_match_finder import find_similar_matches
 from .historical_matcher import build_historical_pools
 from .main import analyze_match
 from .models import HistoricalMatch
@@ -150,6 +152,37 @@ def _current_match(fixture_id: int):
     )
 
 
+def _team_history_summary(current) -> Dict[str, Any]:
+    """Güncel maçın iki takımının son 10 tamamlanmış maçını özetler."""
+    fixture = current.metadata.get("fixture", {}) if isinstance(current.metadata, dict) else {}
+    teams = fixture.get("teams", {}) if isinstance(fixture, dict) else {}
+    home = teams.get("home", {}) if isinstance(teams, dict) else {}
+    away = teams.get("away", {}) if isinstance(teams, dict) else {}
+    home_id = home.get("id") if isinstance(home, dict) else None
+    away_id = away.get("id") if isinstance(away, dict) else None
+    client = _client()
+
+    def load(team_id):
+        if team_id is None:
+            return []
+        try:
+            payload = client.team_fixtures(
+                int(team_id),
+                status="finished",
+                include="stats",
+                page=1,
+                per_page=10,
+            )
+            return client.flatten_fixture_list(payload)
+        except (FootballAPIError, TypeError, ValueError):
+            return []
+
+    return {
+        "home": _team_form(load(home_id), home_id),
+        "away": _team_form(load(away_id), away_id),
+    }
+
+
 @app.get("/")
 def root() -> Dict[str, Any]:
     return {
@@ -240,24 +273,23 @@ def fixture_odds_history(
 def analyze(
     fixture_id: int,
     days: int = Query(default=30, ge=1, le=90),
-    limit: int = Query(default=5, ge=1, le=100),
+    limit: int = Query(default=20, ge=1, le=100),
 ) -> Dict[str, Any]:
-    """
-    Güncel maçı gerçek tarihsel havuzlarla analiz eder.
-
-    Havuzlar bağımsız tutulur:
-    açılış / kapanış / oran değişimi / piyasa / saat.
-    """
+    """Gerçek benzer tarihsel maçlar + güncel takım verileri + AI notu."""
     try:
         current = _current_match(fixture_id)
         historical = _historical_matches(days)
-        pools = build_historical_pools(current, historical)
+        similar = find_similar_matches(current, historical, display_limit=limit)
 
-        analysis = analyze_match(current, historical)
-        candidates = generate_candidates(
-            current,
-            pools,
-            limit=limit,
+        forms = _team_history_summary(current)
+        ai = build_ai_note(
+            current.home_team,
+            current.away_team,
+            forms["home"],
+            forms["away"],
+            similar["common"]["outcome_distribution"],
+            similar["opening"]["outcome_distribution"],
+            similar["closing"]["outcome_distribution"],
         )
 
         return {
@@ -273,9 +305,15 @@ def analyze(
                 "market_profile": asdict(current.market_profile),
             },
             "historical_matches": len(historical),
-            "pool_sizes": pools.sizes(),
-            "analysis": analysis,
-            "candidates": [asdict(candidate) for candidate in candidates],
+            "similar_matches": similar,
+            "team_analysis": forms,
+            "ai_analysis": ai,
+            "matching_rule": {
+                "opening_tolerance": CONFIG.opening_odds_tolerance,
+                "closing_tolerance": CONFIG.closing_odds_tolerance,
+                "movement_tolerance": CONFIG.movement_tolerance,
+                "description": "Her üç 1X2 değeri de ilgili tolerans içinde kalan geçmiş maçlar eşleşme kabul edilir.",
+            },
         }
 
     except FootballAPIError as exc:
