@@ -136,13 +136,39 @@ def build_ai_note(
         ):
             support += 1
 
-    confidence = round(min(95.0, 50.0 + (support / total * 40.0 if total else 0.0)), 1)
+    # Tarihsel benzer maç kanıtı bu motorun ana girdisidir.
+    # Tarihsel örneklem yoksa takım formu tek başına yüksek güven
+    # puanı üretmemelidir.
+    historical_support = bool(
+        common_distribution
+        or closing_distribution
+        or opening_distribution
+    )
+
+    confidence = round(
+        min(
+            95.0,
+            50.0 + (support / total * 40.0 if total else 0.0),
+        ),
+        1,
+    )
+
+    if not historical_support:
+        confidence = min(confidence, 40.0)
 
     if not signals:
-        note = "Yeterli güncel takım veya tarihsel benzerlik verisi bulunamadığı için güçlü bir AI yorumu üretilemedi."
+        note = (
+            "Yeterli güncel takım veya tarihsel benzerlik verisi "
+            "bulunamadığı için güçlü bir AI yorumu üretilemedi."
+        )
         confidence = 20.0
     else:
         note = " ".join(signals)
+        if not historical_support:
+            note += (
+                " Ancak tarihsel benzer oran örneklemi bulunmadığı "
+                "için bu değerlendirme düşük güven düzeyindedir."
+            )
 
     return {
         "note": note,
