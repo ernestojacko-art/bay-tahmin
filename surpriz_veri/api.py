@@ -91,7 +91,21 @@ def _historical_matches(days: int) -> List[HistoricalMatch]:
                 if fixture_id is None:
                     continue
 
-                record = map_fixture_to_match_record(fixture)
+                # Tarihsel fixture cevabındaki gerçek odds bloğunu
+                # MatchRecord'a aktar. Önceden burada odds_data
+                # verilmediği için geçmiş maçların açılış/kapanış
+                # oranları boş kalıyor ve benzerlik motoru 0 sonuç
+                # üretiyordu.
+                fixture_odds = (
+                    fixture.get("odds")
+                    if isinstance(fixture.get("odds"), dict)
+                    else None
+                )
+
+                record = map_fixture_to_match_record(
+                    fixture,
+                    odds_data=fixture_odds,
+                )
                 record = replace(
                     record,
                     outcome=map_fixture_result(fixture),
@@ -312,7 +326,7 @@ def analyze(
                 "opening_tolerance": CONFIG.opening_odds_tolerance,
                 "closing_tolerance": CONFIG.closing_odds_tolerance,
                 "movement_tolerance": CONFIG.movement_tolerance,
-                "description": "Her üç 1X2 değeri de ilgili tolerans içinde kalan geçmiş maçlar eşleşme kabul edilir.",
+                "description": "Açılış ve kapanış 1X2 oranları ölçeklenmiş toleransla, hareket ise ilgili profil ile birlikte karşılaştırılır.",
             },
         }
 
