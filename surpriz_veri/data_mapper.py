@@ -416,31 +416,38 @@ def map_fixture_to_match_record(
         )
 
         if isinstance(data_block, dict):
-            bookmakers = data_block.get(
-                "bookmakers"
-            )
-
-            if (
-                isinstance(bookmakers, list)
-                and bookmakers
-                and isinstance(
-                    bookmakers[0],
-                    dict,
-                )
-            ):
-                bookmaker = bookmakers[0]
-
-                bookmaker_odds = bookmaker.get(
-                    "odds"
+            # Güncel 5DollarFootballAPI tek-maç odds cevabı:
+            # {"data": {"odds": {...}}}
+            direct_odds = data_block.get("odds")
+            if isinstance(direct_odds, dict):
+                external_odds = direct_odds
+            else:
+                # Eski/alternatif bookmaker biçimini de destekle.
+                bookmakers = data_block.get(
+                    "bookmakers"
                 )
 
-                if isinstance(
-                    bookmaker_odds,
-                    dict,
-                ):
-                    external_odds = (
-                        bookmaker_odds
+                if (
+                    isinstance(bookmakers, list)
+                    and bookmakers
+                    and isinstance(
+                        bookmakers[0],
+                        dict,
                     )
+                ):
+                    bookmaker = bookmakers[0]
+
+                    bookmaker_odds = bookmaker.get(
+                        "odds"
+                    )
+
+                    if isinstance(
+                        bookmaker_odds,
+                        dict,
+                    ):
+                        external_odds = (
+                            bookmaker_odds
+                        )
 
     # Doğrudan odds bloğu verilmişse onu kullan.
     if external_odds:
