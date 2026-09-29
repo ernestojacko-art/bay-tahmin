@@ -75,13 +75,26 @@ def _historical_matches(days: int) -> List[HistoricalMatch]:
                 status="finished",
                 include="odds",
                 page=1,
-                per_page=100,
+                per_page=50,
             )
         except FootballAPIError:
-            # Tek bir tarihsel günün API hatası bütün analizi
-            # başarısız bırakmamalıdır. Diğer günlerin havuzları
-            # kullanılmaya devam eder.
-            return []
+            # Bazı API planlarında fixture listesinde include=odds
+            # kısıtlı olabilir. Fixture listesini odds olmadan alıp
+            # aşağıda maç başına /odds endpoint'i ile tamamlarız.
+            try:
+                payload = client.fixtures(
+                    start_time=int(start_dt.timestamp()),
+                    end_time=int(end_dt.timestamp()),
+                    status="finished",
+                    include="events,stats",
+                    page=1,
+                    per_page=100,
+                )
+            except FootballAPIError:
+                # Tek bir tarihsel günün API hatası bütün analizi
+                # başarısız bırakmamalıdır. Diğer günlerin havuzları
+                # kullanılmaya devam eder.
+                return []
 
         result: List[HistoricalMatch] = []
 
@@ -109,12 +122,17 @@ def _historical_matches(days: int) -> List[HistoricalMatch]:
 
                 if not has_1x2:
                     try:
-                        fixture_odds = client.fixture_odds(
+                        odds_payload = client.fixture_odds(
                             fixture_id=int(fixture_id),
                             bookmaker="bet365",
                         )
+                        fixture_odds = odds_payload
                     except (FootballAPIError, ValueError, TypeError):
                         fixture_odds = None
+
+                # Odds bulunamadıysa bu maç benzerlik havuzuna
+                # alınmaz; oranı olmayan geçmiş maçları yanlış
+                # eşleşme olarak değerlendirmiyoruz.
 
                 record = map_fixture_to_match_record(
                     fixture,
