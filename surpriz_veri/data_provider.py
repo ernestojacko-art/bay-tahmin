@@ -213,6 +213,54 @@ class FiveDollarFootballAPI:
             },
         )
 
+    def leagues(
+        self,
+        popular: Optional[int] = None,
+        active_since: Optional[int] = None,
+        page: int = 1,
+        per_page: int = 100,
+    ) -> Dict[str, Any]:
+        """Kapsanan ligleri döndürür; tarihsel tarama için kullanılır."""
+        params: Dict[str, Any] = {
+            "page": page,
+            "per_page": min(per_page, 100),
+            "esports": "false",
+        }
+        if popular is not None:
+            params["popular"] = popular
+        if active_since is not None:
+            params["active_since"] = active_since
+        return self._get("/leagues", params=params)
+
+    def league_fixtures(
+        self,
+        league_id: int,
+        start_time: Optional[int] = None,
+        end_time: Optional[int] = None,
+        status: str = "finished",
+        include: str = "odds,events,stats",
+        page: int = 1,
+        per_page: int = 50,
+        order: str = "desc",
+    ) -> Dict[str, Any]:
+        """Bir ligin uzun tarihsel maç listesini getirir.
+
+        /fixtures endpoint'indeki 24 saatlik pencere sınırını kullanmaz.
+        """
+        params: Dict[str, Any] = {
+            "status": status,
+            "include": include,
+            "page": page,
+            "per_page": min(per_page, 50 if include else 100),
+            "order": order,
+            "esports": "false",
+        }
+        if start_time is not None:
+            params["start_time"] = start_time
+        if end_time is not None:
+            params["end_time"] = end_time
+        return self._get(f"/leagues/{int(league_id)}/fixtures", params=params)
+
     def team_fixtures(
         self,
         team_id: int,
