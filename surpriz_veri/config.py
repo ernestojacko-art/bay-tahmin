@@ -32,9 +32,9 @@ class SurpriseConfig:
     )
 
     # Tarihsel benzerlik taramasının hedeflediği geriye dönük pencere.
-    # API planı izin verdiği ölçüde 24 aya kadar veri aranır.
+    # Mevcut 5DollarFootballAPI Pro kapsamındaki yaklaşık 12 aylık geçmiş aranır.
     historical_days: int = int(
-        os.getenv("SURPRISE_HISTORICAL_DAYS", "730")
+        os.getenv("SURPRISE_HISTORICAL_DAYS", "365")
     )
 
     # Minimum tarihsel örnek sayısı.
