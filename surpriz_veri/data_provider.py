@@ -213,6 +213,26 @@ class FiveDollarFootballAPI:
             },
         )
 
+    def team_fixtures(
+        self,
+        team_id: int,
+        status: str = "finished",
+        include: str = "stats",
+        page: int = 1,
+        per_page: int = 20,
+    ) -> Dict[str, Any]:
+        """Takımın geçmiş maçlarını getirir; AI takım/form katmanı için kullanılır."""
+        return self._get(
+            f"/teams/{team_id}/fixtures",
+            params={
+                "status": status,
+                "include": include,
+                "page": page,
+                "per_page": min(per_page, 50),
+                "order": "desc",
+            },
+        )
+
     def bookmakers(self) -> Dict[str, Any]:
         """
         Kullanılabilir bookmaker listesini getirir.
