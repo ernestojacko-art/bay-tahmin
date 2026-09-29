@@ -3,6 +3,7 @@
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
+import time
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,6 +21,10 @@ app = FastAPI(
     description="Bay Tahmin'den bağımsız Sürpriz Veri analiz API'si.",
     version="1.3.0",
 )
+
+_HISTORICAL_CACHE: Dict[int, Any] = {}
+_HISTORICAL_CACHE_AT: Dict[int, float] = {}
+_HISTORICAL_CACHE_TTL = 6 * 60 * 60
 
 app.add_middleware(
     CORSMiddleware,
@@ -48,6 +53,11 @@ def _historical_matches(days: int, current=None) -> List[HistoricalMatch]:
     1X2 oran profiline sahip geçmiş maçlar farklı liglerde de bulunabilir.
     API planının tarih ve lig kapsamı sınırları aynen geçerlidir.
     """
+    cached = _HISTORICAL_CACHE.get(days)
+    cached_at = _HISTORICAL_CACHE_AT.get(days, 0.0)
+    if cached is not None and time.time() - cached_at < _HISTORICAL_CACHE_TTL:
+        return cached
+
     client = _client()
     now = datetime.now(timezone.utc)
     day_count = min(max(days, 1), 730)
