@@ -356,9 +356,12 @@ def analyze(
             current.away_team,
             forms["home"],
             forms["away"],
-            similar["common"]["outcome_distribution"],
+            similar["comparison"]["outcome_distribution"],
             similar["opening"]["outcome_distribution"],
             similar["closing"]["outcome_distribution"],
+            opening_count=similar["opening"]["match_count"],
+            closing_count=similar["closing"]["match_count"],
+            comparison_count=similar["comparison"]["match_count"],
         )
 
         return {
@@ -382,9 +385,12 @@ def analyze(
                 "closing_tolerance": CONFIG.closing_odds_tolerance,
                 "movement_tolerance": CONFIG.movement_tolerance,
                 "description": (
-                    "Açılış ve kapanış 1X2 oranları ölçeklenmiş toleransla, "
-                    "hareket ise ilgili profil ile birlikte karşılaştırılır; "
-                    "tarihsel eşleşme lig ile sınırlandırılmaz."
+                    "İki ayrı tarihsel tablo kullanılır: mevcut maçın ilk açılış "
+                    "1X2 oranı geçmiş maçların açılışlarıyla; mevcut/güncel 1X2 "
+                    "oranı geçmiş maçların kapanışlarıyla karşılaştırılır. "
+                    "Hareket ayrı bir benzerlik kriteri değildir. İki tablonun "
+                    "aynı geçmiş maçta kesişmesi ayrıca gösterilir. "
+                    "Tarihsel eşleşme lig ile sınırlandırılmaz."
                 ),
             },
         }
