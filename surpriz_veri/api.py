@@ -114,47 +114,30 @@ def _historical_matches(days: int, current=None) -> List[HistoricalMatch]:
 
     fixtures: List[Dict[str, Any]] = []
 
-    # Her lig için planın izin verdiği tarih aralığını tarıyoruz.
-    # include=odds Free planda 403 verebildiği için önce tam veri,
-    # sonra events/stats + maç başına odds fallback'i kullanılır.
+    # Analiz isteği içinde bütün ligleri ve sayfaları taramak, 10/dk
+    # API sınırında dakikalarca beklemeye neden oluyordu. Her analizde
+    # sınırlı sayıda toplu sayfa alınır; alınan gerçek kayıtlar 6 saat cache edilir.
+    # Per-fixture odds çağrıları özellikle yapılmaz.
+    fixtures: List[Dict[str, Any]] = []
+    scan_budget = 8
     for league_id in league_ids:
-        page = 1
-        while page <= 100:
-            try:
-                payload = client.league_fixtures(
-                    league_id=league_id,
-                    start_time=start_ts,
-                    end_time=end_ts,
-                    status="finished",
-                    include="odds,events,stats",
-                    page=page,
-                    per_page=50,
-                    order="desc",
-                )
-            except FootballAPIError:
-                try:
-                    payload = client.league_fixtures(
-                        league_id=league_id,
-                        start_time=start_ts,
-                        end_time=end_ts,
-                        status="finished",
-                        include="events,stats",
-                        page=page,
-                        per_page=100,
-                        order="desc",
-                    )
-                except FootballAPIError:
-                    break
-
-            batch = _rows(payload)
-            if not batch:
-                break
-            fixtures.extend(batch)
-
-            pagination = payload.get("pagination", {})
-            if not isinstance(pagination, dict) or not pagination.get("has_more"):
-                break
-            page += 1
+        if scan_budget <= 0:
+            break
+        try:
+            payload = client.league_fixtures(
+                league_id=league_id,
+                start_time=start_ts,
+                end_time=end_ts,
+                status="finished",
+                include="odds,events,stats",
+                page=1,
+                per_page=50,
+                order="desc",
+            )
+        except FootballAPIError:
+            continue
+        scan_budget -= 1
+        fixtures.extend(_rows(payload))
 
     result: List[HistoricalMatch] = []
     seen = set()
@@ -170,23 +153,6 @@ def _historical_matches(days: int, current=None) -> List[HistoricalMatch]:
             if isinstance(fixture.get("odds"), dict)
             else None
         )
-        has_1x2 = (
-            isinstance(fixture_odds, dict)
-            and isinstance(fixture_odds.get("1x2"), dict)
-            and isinstance(fixture_odds["1x2"].get("opening"), dict)
-            and isinstance(fixture_odds["1x2"].get("closing"), dict)
-        )
-
-        if not has_1x2:
-            try:
-                odds_payload = client.fixture_odds(
-                    fixture_id=int(fixture_id),
-                    bookmaker="bet365",
-                )
-                fixture_odds = odds_payload
-            except (FootballAPIError, ValueError, TypeError):
-                fixture_odds = None
-
         try:
             record = map_fixture_to_match_record(
                 fixture,
