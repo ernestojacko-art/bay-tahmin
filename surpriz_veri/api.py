@@ -91,16 +91,30 @@ def _historical_matches(days: int) -> List[HistoricalMatch]:
                 if fixture_id is None:
                     continue
 
-                # Tarihsel fixture cevabındaki gerçek odds bloğunu
-                # MatchRecord'a aktar. Önceden burada odds_data
-                # verilmediği için geçmiş maçların açılış/kapanış
-                # oranları boş kalıyor ve benzerlik motoru 0 sonuç
-                # üretiyordu.
+                # Tarihsel fixture listesindeki odds eksikse,
+                # maçın bookmaker odds endpoint'inden gerçek
+                # 1X2 odds verisini ayrıca al.
                 fixture_odds = (
                     fixture.get("odds")
                     if isinstance(fixture.get("odds"), dict)
                     else None
                 )
+
+                has_1x2 = (
+                    isinstance(fixture_odds, dict)
+                    and isinstance(fixture_odds.get("1x2"), dict)
+                    and isinstance(fixture_odds["1x2"].get("opening"), dict)
+                    and isinstance(fixture_odds["1x2"].get("closing"), dict)
+                )
+
+                if not has_1x2:
+                    try:
+                        fixture_odds = client.fixture_odds(
+                            fixture_id=int(fixture_id),
+                            bookmaker="bet365",
+                        )
+                    except (FootballAPIError, ValueError, TypeError):
+                        fixture_odds = None
 
                 record = map_fixture_to_match_record(
                     fixture,
