@@ -48,16 +48,21 @@ def _historical_matches(days: int) -> List[HistoricalMatch]:
     """
     Son N günlük tamamlanmış maçları toplar.
 
-    Günlük API penceresi 24 saat tutulur.
+    5DollarFootballAPI fixtures endpoint'i 24 saatlik pencere
+    kullandığı için günlük pencereler korunur. Ancak pencereler
+    paralel çekilir; böylece /analyze isteği Render üzerinde
+    gereksiz yere uzun sürmez.
+
     Opening, closing ve hareket aynı MatchRecord içinde
     ayrı alanlar olarak korunur.
     """
-    client = _client()
-    now = datetime.now(timezone.utc)
-    result: List[HistoricalMatch] = []
-    seen = set()
+    from concurrent.futures import ThreadPoolExecutor
 
-    for offset in range(1, min(max(days, 1), 90) + 1):
+    now = datetime.now(timezone.utc)
+    day_count = min(max(days, 1), 90)
+
+    def load_day(offset: int) -> List[HistoricalMatch]:
+        client = _client()
         end_dt = now - timedelta(days=offset - 1)
         start_dt = end_dt - timedelta(days=1)
 
@@ -70,15 +75,20 @@ def _historical_matches(days: int) -> List[HistoricalMatch]:
             per_page=100,
         )
 
-        for fixture in _rows(payload):
-            fixture_id = fixture.get("id")
-            if fixture_id is None or str(fixture_id) in seen:
-                continue
-            seen.add(str(fixture_id))
+        result: List[HistoricalMatch] = []
 
+        for fixture in _rows(payload):
             try:
+                fixture_id = fixture.get("id")
+                if fixture_id is None:
+                    continue
+
                 record = map_fixture_to_match_record(fixture)
-                record = replace(record, outcome=map_fixture_result(fixture))
+                record = replace(
+                    record,
+                    outcome=map_fixture_result(fixture),
+                )
+
                 result.append(
                     HistoricalMatch(
                         record=record,
@@ -87,6 +97,29 @@ def _historical_matches(days: int) -> List[HistoricalMatch]:
                 )
             except (ValueError, TypeError):
                 continue
+
+        return result
+
+    # Aynı anda sınırlı sayıda istek gönderilir; API'yi
+    # gereksiz şekilde yüklememek için worker sayısı sabittir.
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        batches = executor.map(
+            load_day,
+            range(1, day_count + 1),
+        )
+
+        result: List[HistoricalMatch] = []
+        seen = set()
+
+        for batch in batches:
+            for historical in batch:
+                fixture_id = historical.record.match_id
+
+                if fixture_id in seen:
+                    continue
+
+                seen.add(fixture_id)
+                result.append(historical)
 
     return result
 
