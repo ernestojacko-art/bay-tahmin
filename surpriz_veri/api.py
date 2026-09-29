@@ -202,6 +202,8 @@ def _historical_matches(days: int, current=None) -> List[HistoricalMatch]:
         except (ValueError, TypeError):
             continue
 
+    _HISTORICAL_CACHE[days] = result
+    _HISTORICAL_CACHE_AT[days] = time.time()
     return result
 
 
