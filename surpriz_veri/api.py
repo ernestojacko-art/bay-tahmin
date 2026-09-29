@@ -126,7 +126,7 @@ def _historical_matches(days: int) -> List[HistoricalMatch]:
 
 def _current_match(fixture_id: int):
     client = _client()
-    payload = client.fixture(fixture_id, include="events,stats")
+    payload = client.fixture(fixture_id, include="odds,events,stats")
     rows = client.flatten_fixture_list(payload)
     fixture = rows[0] if rows else payload.get("data", payload)
 
