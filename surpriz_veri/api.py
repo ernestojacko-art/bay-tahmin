@@ -133,22 +133,14 @@ def _current_match(fixture_id: int):
     if not isinstance(fixture, dict):
         raise FootballAPIError("Maç verisi bulunamadı.")
 
-    odds_payload = client.fixture_odds(
-        fixture_id=fixture_id,
-        bookmaker="bet365",
-    )
-    odds_data = odds_payload.get("data", odds_payload)
-
-    if isinstance(odds_data, dict):
-        bookmakers = odds_data.get("bookmakers")
-        if isinstance(bookmakers, list) and bookmakers:
-            first = bookmakers[0]
-            if isinstance(first, dict) and isinstance(first.get("odds"), dict):
-                odds_data = first["odds"]
-
+    # Güncel fixture cevabında odds zaten include="odds" ile istenir.
+    # Ayrı bookmaker odds çağrısı bazı maçlarda veri bulunmadığında
+    # analizi gereksiz yere 502 ile kesebildiği için burada zorunlu değildir.
     return map_fixture_to_match_record(
         fixture,
-        odds_data=odds_data if isinstance(odds_data, dict) else None,
+        odds_data=fixture.get("odds")
+        if isinstance(fixture.get("odds"), dict)
+        else None,
     )
 
 
