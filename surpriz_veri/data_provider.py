@@ -48,6 +48,7 @@ class FiveDollarFootballAPI:
     ):
         self.api_key = (
             api_key
+            or os.getenv("FIVE_DOLLAR_API_KEY")
             or os.getenv("FOOTBALL_API_KEY")
             or os.getenv("FIVE_DOLLAR_FOOTBALL_API_KEY")
         )
@@ -64,7 +65,7 @@ class FiveDollarFootballAPI:
 
         if not self.api_key:
             raise FootballAPIError(
-                "FOOTBALL_API_KEY ortam değişkeni bulunamadı."
+                "FIVE_DOLLAR_API_KEY ortam değişkeni bulunamadı."
             )
 
     @property
@@ -233,5 +234,17 @@ class FiveDollarFootballAPI:
 
         if isinstance(data, list):
             return data
+
+        if isinstance(data, dict):
+            for key in (
+                "fixtures",
+                "items",
+                "results",
+                "data",
+            ):
+                value = data.get(key)
+
+                if isinstance(value, list):
+                    return value
 
         return []
