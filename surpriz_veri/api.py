@@ -1,6 +1,4 @@
-""""
-SÜRPRİZ VERİ - Bağımsız analiz API'si
-"""
+"""SÜRPRİZ VERİ - Bağımsız analiz API'si"""
 
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
@@ -20,7 +18,7 @@ from .result_mapper import map_fixture_result
 app = FastAPI(
     title="Sürpriz Veri API",
     description="Bay Tahmin'den bağımsız Sürpriz Veri analiz API'si.",
-    version="1.2.0",
+    version="1.3.0",
 )
 
 app.add_middleware(
@@ -44,67 +42,109 @@ def _rows(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def _historical_matches(days: int, current=None) -> List[HistoricalMatch]:
-    """Güncel maçın ligindeki gerçek tarihsel maçları uzun dönem tarar.
+    """Kapsanan liglerdeki gerçek tarihsel maçları uzun dönem tarar.
 
-    /fixtures yerine /leagues/{id}/fixtures kullanılır; böylece 24 saat
-    pencere sınırına takılmadan API planının izin verdiği geçmiş taranır.
+    Artık yalnızca güncel maçın ligine bağlı değildir. Böylece aynı/similar
+    1X2 oran profiline sahip geçmiş maçlar farklı liglerde de bulunabilir.
+    API planının tarih ve lig kapsamı sınırları aynen geçerlidir.
     """
     client = _client()
     now = datetime.now(timezone.utc)
     day_count = min(max(days, 1), 730)
-
-    fixture = (
-        current.metadata.get("fixture", {})
-        if current is not None and isinstance(current.metadata, dict)
-        else {}
-    )
-    league = fixture.get("league", {}) if isinstance(fixture, dict) else {}
-    league_id = league.get("id") if isinstance(league, dict) else None
-    if league_id is None:
-        return []
-
     start_dt = now - timedelta(days=day_count)
     end_dt = now
+    start_ts = int(start_dt.timestamp())
+    end_ts = int(end_dt.timestamp())
 
-    fixtures: List[Dict[str, Any]] = []
+    # Önce tarih aralığında aktif olan tüm futbol liglerini al.
+    leagues: List[Dict[str, Any]] = []
     page = 1
-
-    while page <= 100:
+    while page <= 20:
         try:
-            payload = client.league_fixtures(
-                league_id=int(league_id),
-                start_time=int(start_dt.timestamp()),
-                end_time=int(end_dt.timestamp()),
-                status="finished",
-                include="odds,events,stats",
+            payload = client.leagues(
+                active_since=start_ts,
                 page=page,
-                per_page=50,
-                order="desc",
+                per_page=100,
             )
         except FootballAPIError:
-            try:
-                payload = client.league_fixtures(
-                    league_id=int(league_id),
-                    start_time=int(start_dt.timestamp()),
-                    end_time=int(end_dt.timestamp()),
-                    status="finished",
-                    include="events,stats",
-                    page=page,
-                    per_page=100,
-                    order="desc",
-                )
-            except FootballAPIError:
-                break
-
-        batch = _rows(payload)
-        if not batch:
             break
-        fixtures.extend(batch)
 
-        pagination = payload.get("pagination", {}) if isinstance(payload, dict) else {}
+        data = payload.get("data", [])
+        if isinstance(data, dict):
+            data = (
+                data.get("leagues")
+                or data.get("items")
+                or data.get("results")
+                or []
+            )
+        if not isinstance(data, list) or not data:
+            break
+
+        leagues.extend(x for x in data if isinstance(x, dict))
+
+        pagination = payload.get("pagination", {})
         if not isinstance(pagination, dict) or not pagination.get("has_more"):
             break
         page += 1
+
+    # Aynı lig birden fazla sayfadan gelirse tekilleştir.
+    league_ids: List[int] = []
+    seen_leagues = set()
+    for league in leagues:
+        league_id = league.get("id")
+        if league_id is None:
+            continue
+        try:
+            league_id = int(league_id)
+        except (TypeError, ValueError):
+            continue
+        if league_id not in seen_leagues:
+            seen_leagues.add(league_id)
+            league_ids.append(league_id)
+
+    fixtures: List[Dict[str, Any]] = []
+
+    # Her lig için planın izin verdiği tarih aralığını tarıyoruz.
+    # include=odds Free planda 403 verebildiği için önce tam veri,
+    # sonra events/stats + maç başına odds fallback'i kullanılır.
+    for league_id in league_ids:
+        page = 1
+        while page <= 100:
+            try:
+                payload = client.league_fixtures(
+                    league_id=league_id,
+                    start_time=start_ts,
+                    end_time=end_ts,
+                    status="finished",
+                    include="odds,events,stats",
+                    page=page,
+                    per_page=50,
+                    order="desc",
+                )
+            except FootballAPIError:
+                try:
+                    payload = client.league_fixtures(
+                        league_id=league_id,
+                        start_time=start_ts,
+                        end_time=end_ts,
+                        status="finished",
+                        include="events,stats",
+                        page=page,
+                        per_page=100,
+                        order="desc",
+                    )
+                except FootballAPIError:
+                    break
+
+            batch = _rows(payload)
+            if not batch:
+                break
+            fixtures.extend(batch)
+
+            pagination = payload.get("pagination", {})
+            if not isinstance(pagination, dict) or not pagination.get("has_more"):
+                break
+            page += 1
 
     result: List[HistoricalMatch] = []
     seen = set()
@@ -343,7 +383,8 @@ def analyze(
                 "movement_tolerance": CONFIG.movement_tolerance,
                 "description": (
                     "Açılış ve kapanış 1X2 oranları ölçeklenmiş toleransla, "
-                    "hareket ise ilgili profil ile birlikte karşılaştırılır."
+                    "hareket ise ilgili profil ile birlikte karşılaştırılır; "
+                    "tarihsel eşleşme lig ile sınırlandırılmaz."
                 ),
             },
         }
