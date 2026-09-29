@@ -18,6 +18,8 @@ ayrı veri alanları olarak korunur.
 """
 
 import os
+import time
+from collections import deque
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -62,6 +64,7 @@ class FiveDollarFootballAPI:
         ).rstrip("/")
 
         self.timeout = timeout
+        self._request_times = deque(maxlen=20)
 
         if not self.api_key:
             raise FootballAPIError(
@@ -86,12 +89,30 @@ class FiveDollarFootballAPI:
 
         url = f"{self.base_url}/{path.lstrip('/')}"
 
-        response = requests.get(
-            url,
-            headers=self.headers,
-            params=params,
-            timeout=self.timeout,
-        )
+        now = time.monotonic()
+        recent = [t for t in self._request_times if now - t < 60]
+        self._request_times.clear()
+        self._request_times.extend(recent)
+        if len(recent) >= 9:
+            time.sleep(max(0.0, 60.0 - (now - recent[0]) + 0.25))
+
+        for attempt in range(3):
+            self._request_times.append(time.monotonic())
+            response = requests.get(
+                url,
+                headers=self.headers,
+                params=params,
+                timeout=self.timeout,
+            )
+            if response.status_code == 429 and attempt < 2:
+                retry_after = response.headers.get("Retry-After")
+                try:
+                    delay = float(retry_after) if retry_after else 10.0
+                except (TypeError, ValueError):
+                    delay = 10.0
+                time.sleep(max(delay, 1.0))
+                continue
+            break
 
         if response.status_code >= 400:
             raise FootballAPIError(
