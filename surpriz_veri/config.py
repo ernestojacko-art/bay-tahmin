@@ -31,6 +31,12 @@ class SurpriseConfig:
         os.getenv("SURPRISE_MOVEMENT_TOLERANCE", "0.15")
     )
 
+    # Tarihsel benzerlik taramasının hedeflediği geriye dönük pencere.
+    # API planı izin verdiği ölçüde 24 aya kadar veri aranır.
+    historical_days: int = int(
+        os.getenv("SURPRISE_HISTORICAL_DAYS", "730")
+    )
+
     # Minimum tarihsel örnek sayısı.
     min_historical_samples: int = int(
         os.getenv("SURPRISE_MIN_HISTORICAL_SAMPLES", "20")
