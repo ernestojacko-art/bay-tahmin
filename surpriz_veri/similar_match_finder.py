@@ -140,19 +140,72 @@ def _find(
         ]
 
     if mode == "movement":
-        tolerance = CONFIG.movement_tolerance
-        return [
-            (
-                h,
-                _distance(
-                    _movement_values(current.odds_movement),
-                    _movement_values(h.record.odds_movement),
-                    tolerance,
-                ),
+        # Hareket tek başına benzer maç kanıtı değildir.
+        # Örneğin 1.17/5.50/15.00 -> 1.18/5.25/15.00
+        # hareket olarak 0.00/-0.25/+0.03'e yakın görünebilir;
+        # fakat 8.00/5.00/1.33 profiliyle ilgisizdir.
+        #
+        # Bu nedenle hareket havuzuna yalnızca:
+        #   1) hareketi tolerans içinde benzer VE
+        #   2) açılış VEYA kapanış 1X2 oran profili de tolerans içinde benzer
+        # olan gerçek tarihsel maçlar alınır.
+        move_tolerance = CONFIG.movement_tolerance
+        opening_tolerance = CONFIG.opening_odds_tolerance
+        closing_tolerance = CONFIG.closing_odds_tolerance
+        rows = []
+        for h in historical:
+            movement_ok = _movement_match(
+                current.odds_movement,
+                h.record.odds_movement,
+                move_tolerance,
             )
-            for h in historical
-            if _movement_match(current.odds_movement, h.record.odds_movement, tolerance)
-        ]
+            if not movement_ok:
+                continue
+
+            opening_ok = _odds_match(
+                current.opening_odds,
+                h.record.opening_odds,
+                opening_tolerance,
+            )
+            closing_ok = _odds_match(
+                current.closing_odds,
+                h.record.closing_odds,
+                closing_tolerance,
+            )
+            if not (opening_ok or closing_ok):
+                continue
+
+            movement_distance = _distance(
+                _movement_values(current.odds_movement),
+                _movement_values(h.record.odds_movement),
+                move_tolerance,
+            )
+
+            # Hareket eşleşmesini, ilgili açılış/kapanış profilinin
+            # yakınlığıyla birlikte sıralıyoruz.
+            profile_distances = []
+            if opening_ok:
+                profile_distances.append(
+                    _distance(
+                        current.opening_odds.values(),
+                        h.record.opening_odds.values(),
+                        opening_tolerance,
+                    )
+                )
+            if closing_ok:
+                profile_distances.append(
+                    _distance(
+                        current.closing_odds.values(),
+                        h.record.closing_odds.values(),
+                        closing_tolerance,
+                    )
+                )
+
+            profile_distance = min(profile_distances)
+            combined_distance = (movement_distance + profile_distance) / 2
+            rows.append((h, combined_distance))
+
+        return rows
 
     raise ValueError(f"Unknown similarity mode: {mode}")
 
