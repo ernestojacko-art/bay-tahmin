@@ -66,14 +66,20 @@ def _historical_matches(days: int) -> List[HistoricalMatch]:
         end_dt = now - timedelta(days=offset - 1)
         start_dt = end_dt - timedelta(days=1)
 
-        payload = client.fixtures(
-            start_time=int(start_dt.timestamp()),
-            end_time=int(end_dt.timestamp()),
-            status="finished",
-            include="odds",
-            page=1,
-            per_page=100,
-        )
+        try:
+            payload = client.fixtures(
+                start_time=int(start_dt.timestamp()),
+                end_time=int(end_dt.timestamp()),
+                status="finished",
+                include="odds",
+                page=1,
+                per_page=100,
+            )
+        except FootballAPIError:
+            # Tek bir tarihsel günün API hatası bütün analizi
+            # başarısız bırakmamalıdır. Diğer günlerin havuzları
+            # kullanılmaya devam eder.
+            return []
 
         result: List[HistoricalMatch] = []
 
@@ -126,7 +132,7 @@ def _historical_matches(days: int) -> List[HistoricalMatch]:
 
 def _current_match(fixture_id: int):
     client = _client()
-    payload = client.fixture(fixture_id, include="odds,events,stats")
+    payload = client.fixture(fixture_id, include="odds")
     rows = client.flatten_fixture_list(payload)
     fixture = rows[0] if rows else payload.get("data", payload)
 
