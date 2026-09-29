@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 
 from .config import CONFIG
 from .data_mapper import map_fixture_to_match_record
@@ -16,6 +17,17 @@ from .main import analyze_match
 from .models import HistoricalMatch
 from .result_mapper import map_fixture_result
 from .surprise_candidates import generate_candidates
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://www.futbol-ajani.com",
+        "https://futbol-ajani.com",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app = FastAPI(
     title="Sürpriz Veri API",
