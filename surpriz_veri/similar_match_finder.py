@@ -25,11 +25,28 @@ def _close(a: Optional[float], b: Optional[float], tolerance: float) -> bool:
     return abs(a - b) <= tolerance
 
 
+def _odds_component_tolerance(current_value: Optional[float], base_tolerance: float) -> float:
+    """Oranın büyüklüğüne göre ölçeklenen tolerans."""
+    if current_value is None:
+        return base_tolerance
+    return max(base_tolerance, abs(current_value) * 0.05)
+
+
 def _odds_match(current: Odds, historical: Odds, tolerance: float) -> bool:
     return all(
-        _close(c, h, tolerance)
+        _close(c, h, _odds_component_tolerance(c, tolerance))
         for c, h in zip(current.values(), historical.values())
     )
+
+
+def _odds_distance(current: Odds, historical: Odds, tolerance: float) -> float:
+    values = []
+    for c, h in zip(current.values(), historical.values()):
+        if c is None or h is None:
+            return 999.0
+        component_tolerance = _odds_component_tolerance(c, tolerance)
+        values.append(abs(c - h) / max(component_tolerance, 0.0001))
+    return sum(values) / len(values) if values else 999.0
 
 
 def _movement_values(movement: OddsMovement) -> List[Optional[float]]:
@@ -122,7 +139,7 @@ def _find(
         return [
             (
                 h,
-                _distance(current.opening_odds.values(), h.record.opening_odds.values(), tolerance),
+                _odds_distance(current.opening_odds, h.record.opening_odds, tolerance),
             )
             for h in historical
             if _odds_match(current.opening_odds, h.record.opening_odds, tolerance)
@@ -133,7 +150,7 @@ def _find(
         return [
             (
                 h,
-                _distance(current.closing_odds.values(), h.record.closing_odds.values(), tolerance),
+                _odds_distance(current.closing_odds, h.record.closing_odds, tolerance),
             )
             for h in historical
             if _odds_match(current.closing_odds, h.record.closing_odds, tolerance)
@@ -186,17 +203,17 @@ def _find(
             profile_distances = []
             if opening_ok:
                 profile_distances.append(
-                    _distance(
-                        current.opening_odds.values(),
-                        h.record.opening_odds.values(),
+                    _odds_distance(
+                        current.opening_odds,
+                        h.record.opening_odds,
                         opening_tolerance,
                     )
                 )
             if closing_ok:
                 profile_distances.append(
-                    _distance(
-                        current.closing_odds.values(),
-                        h.record.closing_odds.values(),
+                    _odds_distance(
+                        current.closing_odds,
+                        h.record.closing_odds,
                         closing_tolerance,
                     )
                 )
@@ -240,14 +257,14 @@ def find_similar_matches(
 
     for match_id in common_ids:
         h = by_id[match_id]
-        d_open = _distance(
-            current.opening_odds.values(),
-            h.record.opening_odds.values(),
+        d_open = _odds_distance(
+            current.opening_odds,
+            h.record.opening_odds,
             CONFIG.opening_odds_tolerance,
         )
-        d_close = _distance(
-            current.closing_odds.values(),
-            h.record.closing_odds.values(),
+        d_close = _odds_distance(
+            current.closing_odds,
+            h.record.closing_odds,
             CONFIG.closing_odds_tolerance,
         )
         d_move = _distance(
