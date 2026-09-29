@@ -70,7 +70,7 @@ def _historical_matches(days: int) -> List[HistoricalMatch]:
             start_time=int(start_dt.timestamp()),
             end_time=int(end_dt.timestamp()),
             status="finished",
-            include="odds,events,stats",
+            include="odds",
             page=1,
             per_page=100,
         )
