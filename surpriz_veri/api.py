@@ -18,6 +18,12 @@ from .models import HistoricalMatch
 from .result_mapper import map_fixture_result
 from .surprise_candidates import generate_candidates
 
+app = FastAPI(
+    title="Sürpriz Veri API",
+    description="Bay Tahmin'den bağımsız Sürpriz Veri analiz API'si.",
+    version="1.1.0",
+)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -27,12 +33,6 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-)
-
-app = FastAPI(
-    title="Sürpriz Veri API",
-    description="Bay Tahmin'den bağımsız Sürpriz Veri analiz API'si.",
-    version="1.1.0",
 )
 
 
