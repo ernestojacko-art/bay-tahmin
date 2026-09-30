@@ -282,6 +282,46 @@ def fixtures(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+@app.get("/fixtures/week")
+def weekly_fixtures(
+    start_time: int = Query(...),
+    end_time: int = Query(...),
+    status: str = Query(default="scheduled"),
+    per_page: int = Query(default=100, ge=1, le=500),
+) -> Dict[str, Any]:
+    """Haftalık programı, sağlayıcının 24 saatlik pencere sınırına uyarak toplar."""
+    if end_time <= start_time:
+        raise HTTPException(status_code=400, detail="Bitiş zamanı başlangıçtan sonra olmalıdır.")
+    if end_time - start_time > 7 * 24 * 60 * 60:
+        raise HTTPException(status_code=400, detail="En fazla 7 günlük aralık istenebilir.")
+
+    client = _client()
+    combined: List[Dict[str, Any]] = []
+    cursor = start_time
+    try:
+        while cursor <= end_time:
+            chunk_end = min(cursor + 24 * 60 * 60 - 1, end_time)
+            payload = client.fixtures(
+                start_time=cursor,
+                end_time=chunk_end,
+                status=status,
+                include="odds,events,stats",
+                page=1,
+                per_page=min(per_page, 500),
+            )
+            combined.extend(client.flatten_fixture_list(payload))
+            cursor = chunk_end + 1
+    except FootballAPIError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    unique: Dict[str, Dict[str, Any]] = {}
+    for fixture in combined:
+        fixture_id = fixture.get("id") or fixture.get("fixture_id")
+        if fixture_id is not None:
+            unique[str(fixture_id)] = fixture
+    return {"data": list(unique.values()), "count": len(unique)}
+
+
 @app.get("/fixtures/{fixture_id}")
 def fixture(fixture_id: int) -> Dict[str, Any]:
     try:
