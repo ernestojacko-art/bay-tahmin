@@ -188,6 +188,15 @@ def minimum_sample_ok(evidence: Evidence) -> bool:
 
 
 def filter_reliable_evidence(combined: List[CombinedOutcome]) -> List[CombinedOutcome]:
+    """Yetersiz örneklemli kanıtları eler.
+
+    weighted_score ve supporting_pools, elenen kanıtı hâlâ içeriyor
+    görünmesin diye yalnızca örneklemi yeterli (valid_evidence) kanıtlar
+    üzerinden yeniden hesaplanır. Aksi hâlde bir havuz "destekliyor"
+    gibi görünüp örneklem yetersizliğinden skora/örnek boyutlarına hiç
+    katkı yapmayabilirdi.
+    """
+
     filtered = []
 
     for item in combined:
@@ -200,11 +209,22 @@ def filter_reliable_evidence(combined: List[CombinedOutcome]) -> List[CombinedOu
         if not valid_evidence:
             continue
 
+        weighted_score = sum(
+            evidence.frequency * evidence.weight
+            for evidence in valid_evidence
+        )
+
+        supporting_pools = [
+            evidence.pool_name
+            for evidence in valid_evidence
+            if evidence.frequency > 0 and evidence.sample_size > 0
+        ]
+
         filtered.append(
             CombinedOutcome(
                 outcome=item.outcome,
-                weighted_score=item.weighted_score,
-                supporting_pools=item.supporting_pools,
+                weighted_score=weighted_score,
+                supporting_pools=supporting_pools,
                 evidence=valid_evidence,
             )
         )
