@@ -73,51 +73,91 @@ def _extract_team_name(
     return str(value)
 
 
-def _extract_odds_stage(
+def _get_market_block(
     odds_data: Dict[str, Any],
-    stage: str,
-) -> Odds:
+    *names: str,
+) -> Optional[Dict[str, Any]]:
     """
-    1X2 odds içinden opening veya closing değerini alır.
+    Verilen market anahtarlarını (ör. "1x2") odds_data içinde
+    büyük/küçük harf ve boşluk farklarına karşı tolere ederek bulur.
 
-    Beklenen yapı:
-
-    odds:
-      1x2:
-        opening:
-          home
-          draw
-          away
-        closing:
-          home
-          draw
-          away
+    Gerçek 5DollarFootballAPI anahtarı "1x2" şeklindedir, ancak
+    kaynağa göre "1X2" gibi varyasyonlar da görülebilir.
     """
 
     if not isinstance(odds_data, dict):
-        return Odds()
+        return None
 
-    one_x_two = odds_data.get("1x2")
+    normalized_targets = {
+        name.strip().lower().replace("-", "_").replace(" ", "_")
+        for name in names
+    }
 
-    if not isinstance(one_x_two, dict):
-        return Odds()
+    for key, value in odds_data.items():
+        normalized_key = (
+            str(key).strip().lower().replace("-", "_").replace(" ", "_")
+        )
+        if normalized_key in normalized_targets and isinstance(value, dict):
+            return value
 
-    stage_data = one_x_two.get(stage)
+    return None
 
-    if not isinstance(stage_data, dict):
-        return Odds()
+
+def _odds_from_stage_data(stage_data: Dict[str, Any]) -> Odds:
+    """Bir oran aşaması (opening/closing/current) bloğunu Odds'a çevirir."""
 
     return Odds(
         home=_float_or_none(
-            stage_data.get("home")
+            _first_value(stage_data, "home", "1")
         ),
         draw=_float_or_none(
-            stage_data.get("draw")
+            _first_value(stage_data, "draw", "x", "X")
         ),
         away=_float_or_none(
-            stage_data.get("away")
+            _first_value(stage_data, "away", "2")
         ),
     )
+
+
+def _extract_odds_stage(
+    odds_data: Dict[str, Any],
+    stage: str,
+    fallback_stages: tuple = (),
+) -> Odds:
+    """
+    1X2 odds içinden opening/closing/current değerini alır.
+
+    Beklenen yapı (gerçek 5DollarFootballAPI şeması):
+
+    odds:
+      1x2:
+        current:
+          home / draw / away
+        closing:
+          home / draw / away
+        opening:
+          home / draw / away
+
+    "closing" aşaması, maç henüz başlamamışsa API'de bulunmayabilir
+    (kapanış oranı yalnızca bahis kapandığında oluşur). Bu durumda
+    fallback_stages ile "current" aşaması bir yaklaşık değer olarak
+    kullanılabilir. "opening" için fallback uygulanmaz; açılış oranı
+    yoksa gerçekten yoktur ve uydurulmaz.
+    """
+
+    one_x_two = _get_market_block(odds_data, "1x2", "match_odds", "1X2")
+
+    if one_x_two is None:
+        return Odds()
+
+    for candidate_stage in (stage, *fallback_stages):
+        stage_data = one_x_two.get(candidate_stage)
+        if isinstance(stage_data, dict):
+            odds = _odds_from_stage_data(stage_data)
+            if any(v is not None for v in odds.values()):
+                return odds
+
+    return Odds()
 
 
 def calculate_odds_movement(
@@ -460,10 +500,24 @@ def map_fixture_to_match_record(
         "opening",
     )
 
+    # Maç henüz oynanmamışsa gerçek "closing" oranı API'de bulunmaz
+    # (kapanış, bahis kapandığında oluşur). Bu durumda "current" aşaması
+    # en güncel yaklaşık değer olarak kullanılır; ancak bu durum
+    # metadata.closing_is_live_fallback alanında açıkça işaretlenir,
+    # gerçek kapanış oranıymış gibi gösterilmez.
     closing = _extract_odds_stage(
         source_odds,
         "closing",
     )
+    closing_is_live_fallback = False
+    if all(v is None for v in closing.values()):
+        fallback_closing = _extract_odds_stage(
+            source_odds,
+            "current",
+        )
+        if any(v is not None for v in fallback_closing.values()):
+            closing = fallback_closing
+            closing_is_live_fallback = True
 
     movement = calculate_odds_movement(
         opening,
@@ -520,5 +574,6 @@ def map_fixture_to_match_record(
         metadata={
             "fixture": fixture,
             "odds": source_odds,
+            "closing_is_live_fallback": closing_is_live_fallback,
         },
     )
