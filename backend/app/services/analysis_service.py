@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from app.cache.cache import match_analysis_cache, raw_dataset_cache
 from app.core.config import Settings, TeamStrengthWeights, get_settings, get_team_strength_weights
+from app.intelligence import historical_evidence_client
 from app.intelligence.data_intelligence import DataIntelligenceLayer
 from app.intelligence.prediction_engine import PredictionEngine
 from app.providers.base import BaseFootballDataProvider
@@ -53,6 +54,18 @@ class AnalysisService:
 
         dataset = await self.get_dataset(match_id, use_cache=not force_refresh)
         prediction = self._prediction_engine.analyze(dataset)
+
+        # Sürpriz Veri (ayrı, bağımsız tarihsel kanıt motoru) yapılandırılmışsa
+        # sonucunu ekler. Yapılandırılmamışsa veya erişilemezse bu adım
+        # tamamen sessiz kalır ve ana analiz akışını etkilemez.
+        if historical_evidence_client.is_configured():
+            try:
+                prediction.historical_evidence = await historical_evidence_client.fetch_historical_evidence(
+                    match_id
+                )
+            except Exception:
+                pass
+
         match_analysis_cache.set(
             cache_key, prediction, self._settings.match_analysis_cache_ttl_seconds
         )
