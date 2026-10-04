@@ -13,6 +13,8 @@ from .data_mapper import map_fixture_to_match_record
 from .data_provider import FiveDollarFootballAPI, FootballAPIError
 from .ai_analysis import build_ai_note, _team_form
 from .similar_match_finder import find_similar_matches
+from .historical_matcher import build_historical_pools
+from .surprise_candidates import generate_candidates
 from .models import HistoricalMatch
 from .result_mapper import map_fixture_result
 
@@ -24,7 +26,14 @@ app = FastAPI(
 
 _HISTORICAL_CACHE: Dict[int, Any] = {}
 _HISTORICAL_CACHE_AT: Dict[int, float] = {}
-_HISTORICAL_CACHE_TTL = 6 * 60 * 60
+_HISTORICAL_CACHE_TTL = 12 * 60 * 60
+
+# Liste uç noktaları (ör. /leagues/{id}/fixtures) "include=odds" ile
+# çağrılsa bile her zaman güvenilir şekilde oran gömmez. Bu nedenle
+# gerçek açılış/kapanış oranı gereken tarihsel maçlar için ayrıca
+# /fixtures/{id}/odds çağrılır. Bu, her analizde yüzlerce ek istek
+# anlamına geleceğinden, çağrı sayısı sabit bir üst sınırla korunur.
+_HISTORICAL_ODDS_FETCH_CAP = 40
 
 app.add_middleware(
     CORSMiddleware,
@@ -141,23 +150,51 @@ def _historical_matches(days: int, current=None) -> List[HistoricalMatch]:
 
     result: List[HistoricalMatch] = []
     seen = set()
+    odds_fetch_budget = _HISTORICAL_ODDS_FETCH_CAP
 
     for fixture in fixtures:
+        if odds_fetch_budget <= 0:
+            break
+
         fixture_id = fixture.get("id") if isinstance(fixture, dict) else None
         if fixture_id is None or str(fixture_id) in seen:
             continue
         seen.add(str(fixture_id))
 
+        # Liste uç noktasının gömdüğü oran varsa önce onu dene;
+        # yoksa (çoğunlukla olduğu gibi) tek maç oran uç noktasından
+        # gerçek açılış/kapanış değerini ayrıca çek. Oran bulunamayan
+        # bir tarihsel maç, açılış/kapanış havuzlarında hiçbir zaman
+        # eşleşmeyeceğinden havuza eklenmesi anlamsızdır.
         fixture_odds = (
             fixture.get("odds")
             if isinstance(fixture.get("odds"), dict)
             else None
         )
+
+        if not fixture_odds:
+            try:
+                fixture_odds = client.fixture_odds(int(fixture_id))
+            except (FootballAPIError, TypeError, ValueError):
+                fixture_odds = None
+
+        odds_fetch_budget -= 1
+
+        if not fixture_odds:
+            continue
+
         try:
             record = map_fixture_to_match_record(
                 fixture,
                 odds_data=fixture_odds,
             )
+            if (
+                record.opening_odds.home is None
+                and record.closing_odds.home is None
+            ):
+                # Oran bloğu geldi ama 1X2 çözümlenemedi; bu maç
+                # hiçbir havuzda kullanılamaz, dahil etmenin anlamı yok.
+                continue
             record = replace(record, outcome=map_fixture_result(fixture))
             result.append(
                 HistoricalMatch(
@@ -175,18 +212,31 @@ def _historical_matches(days: int, current=None) -> List[HistoricalMatch]:
 
 def _current_match(fixture_id: int):
     client = _client()
-    payload = client.fixture(fixture_id, include="odds")
+    payload = client.fixture(fixture_id, include="odds,events,stats")
     rows = client.flatten_fixture_list(payload)
     fixture = rows[0] if rows else payload.get("data", payload)
 
     if not isinstance(fixture, dict):
         raise FootballAPIError("Maç verisi bulunamadı.")
 
+    odds_data = (
+        fixture.get("odds")
+        if isinstance(fixture.get("odds"), dict)
+        else None
+    )
+
+    # "include=odds" bazı fixture yanıtlarında odds bloğunu ekine
+    # taşımayabilir. Bu durumda ayrıca /fixtures/{id}/odds uç noktası
+    # denenir; aksi hâlde oran karşılaştırması sessizce boş kalırdı.
+    if not odds_data:
+        try:
+            odds_data = client.fixture_odds(fixture_id)
+        except FootballAPIError:
+            odds_data = None
+
     return map_fixture_to_match_record(
         fixture,
-        odds_data=fixture.get("odds")
-        if isinstance(fixture.get("odds"), dict)
-        else None,
+        odds_data=odds_data,
     )
 
 
@@ -358,7 +408,7 @@ def analyze(
     days: int = Query(default=CONFIG.historical_days, ge=1, le=730),
     limit: int = Query(default=20, ge=1, le=100),
 ) -> Dict[str, Any]:
-    """Gerçek benzer tarihsel maçlar + güncel takım verileri + AI notu."""
+    """Gerçek benzer tarihsel maçlar + 5 havuzlu kanıt motoru + AI notu."""
     try:
         current = _current_match(fixture_id)
         historical = _historical_matches(days, current)
@@ -382,6 +432,32 @@ def analyze(
             comparison_count=similar["comparison"]["match_count"],
         )
 
+        # ------------------------------------------------------------
+        # 5 HAVUZLU KANIT MOTORU (Opening / Closing / Movement /
+        # Market Profile / Kickoff) — README'de tarif edilen asıl
+        # sistem. Önceden bu motor hiçbir endpoint'e bağlı değildi;
+        # artık /analyze çıktısının asıl gövdesidir.
+        # ------------------------------------------------------------
+        pools = build_historical_pools(current, historical)
+        pool_sizes = pools.sizes()
+
+        candidates = generate_candidates(
+            current,
+            pools,
+            limit=limit,
+        )
+
+        surprise_candidates = [
+            {
+                "outcome": candidate.outcome,
+                "score": candidate.score,
+                "supporting_pools": candidate.supporting_pools,
+                "sample_sizes": candidate.sample_sizes,
+                "explanation": candidate.explanation,
+            }
+            for candidate in candidates
+        ]
+
         return {
             "match": {
                 "id": current.match_id,
@@ -391,10 +467,24 @@ def analyze(
                 "competition": current.competition,
                 "opening_odds": asdict(current.opening_odds),
                 "closing_odds": asdict(current.closing_odds),
+                "closing_is_live_fallback": bool(
+                    current.metadata.get("closing_is_live_fallback")
+                    if isinstance(current.metadata, dict)
+                    else False
+                ),
                 "odds_movement": asdict(current.odds_movement),
                 "market_profile": asdict(current.market_profile),
             },
             "historical_matches": len(historical),
+            "pool_sizes": pool_sizes,
+            "surprise_candidates": surprise_candidates,
+            "surprise_candidates_note": (
+                "Yalnızca en az "
+                f"{CONFIG.min_historical_samples} örneklemi olan havuzlardan "
+                "destek alan İY/MS sonuçları listelenir. Skor, havuzların "
+                "ağırlıklı tarihsel desteğini ifade eder; kesin sonuç veya "
+                "kazanç garantisi değildir."
+            ),
             "similar_matches": similar,
             "team_analysis": forms,
             "ai_analysis": ai,
@@ -408,7 +498,11 @@ def analyze(
                     "oranı geçmiş maçların kapanışlarıyla karşılaştırılır. "
                     "Hareket ayrı bir benzerlik kriteri değildir. İki tablonun "
                     "aynı geçmiş maçta kesişmesi ayrıca gösterilir. "
-                    "Tarihsel eşleşme lig ile sınırlandırılmaz."
+                    "Tarihsel eşleşme lig ile sınırlandırılmaz. Bunların "
+                    "yanında, beş bağımsız kanıt havuzunu (açılış, kapanış, "
+                    "hareket, market profili, başlama saati) ağırlıklı olarak "
+                    "birleştiren ayrı bir kanıt motoru 'surprise_candidates' "
+                    "alanında sunulur."
                 ),
             },
         }
