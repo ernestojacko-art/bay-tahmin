@@ -136,6 +136,7 @@ def _legacy_analysis_contract(prediction, dataset=None):
         "confidence": data.get("confidence"),
         "market_comparison": data.get("market_comparison"),
         "data_quality": data.get("data_quality"),
+        "historical_evidence": data.get("historical_evidence"),
     }
 
 
