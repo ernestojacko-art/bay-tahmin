@@ -109,6 +109,34 @@ class SurpriseCandidate(BaseModel):
     composite_score: float
 
 
+class HistoricalEvidenceCandidate(BaseModel):
+    """Sürpriz Veri'nin 5 havuzlu kanıt motorundan gelen tek bir İY/MS adayı."""
+    outcome: str
+    score: float
+    supporting_pools: list[str] = []
+    sample_sizes: dict[str, int] = {}
+    explanation: str = ""
+
+
+class HistoricalEvidence(BaseModel):
+    """
+    Sürpriz Veri modülünden (ayrı, bağımsız tarihsel oran-benzerliği motoru)
+    gelen özet. Bu, ana model/piyasa karşılaştırmasının (surprises alanı)
+    yerine geçmez -- tamamen ayrı bir tarihsel kanıt bakış açısıdır: benzer
+    açılış/kapanış oranlarına sahip geçmiş maçlarda hangi İY/MS sonuçlarının
+    ne sıklıkla gerçekleştiğini gösterir.
+
+    `available=False` ise Sürpriz Veri servisi yapılandırılmamış, erişilemez
+    veya yeterli tarihsel örneklem bulunamamış demektir -- bu durumda hiçbir
+    sayı uydurulmaz.
+    """
+    available: bool = False
+    historical_sample_size: int = 0
+    pool_sizes: dict[str, int] = {}
+    candidates: list[HistoricalEvidenceCandidate] = []
+    note: Optional[str] = None
+
+
 class MatchPrediction(BaseModel):
     match_id: str
     generated_at: datetime
@@ -133,3 +161,4 @@ class MatchPrediction(BaseModel):
     data_quality: DataQuality
     warnings: list[str] = []
     disclaimers: list[str] = []
+    historical_evidence: Optional[HistoricalEvidence] = None
