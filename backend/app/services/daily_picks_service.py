@@ -30,6 +30,8 @@ from app.schemas.prediction import MatchPrediction
 from app.services.analysis_service import AnalysisService
 from app.services.fixture_selection import select_upcoming
 
+import accuracy
+
 ISTANBUL = ZoneInfo("Europe/Istanbul")
 
 # Analyzing a fixture means several outbound calls to the data provider
@@ -38,6 +40,21 @@ ISTANBUL = ZoneInfo("Europe/Istanbul")
 # provider's rate limit and returning nothing. This mirrors the same cap
 # already used by `ChatOrchestrator._daily_surprises`.
 MAX_CANDIDATES = 40
+
+# Maps a PickCandidate.market display label to the internal prediction_type
+# code `accuracy.py` knows how to resolve against a finished fixture (see
+# `accuracy._outcome_from_fixture`). This is how "İdeal 4'lü" / "Sürpriz
+# 4'lü" / "İY/MS Sürpriz 4'lü" feed the real won/lost accuracy tracking
+# shown in the admin panel -- every pick actually shown to a user gets
+# recorded, not just computed and discarded.
+_ACCURACY_MARKET_CODES = {
+    "Maç Sonucu (1X2)": "1x2",
+    "Alt/Üst Gol": "goal_line",
+    "Karşılıklı Gol (KG)": "btts",
+    "Çifte Şans": "double_chance",
+    "Asya Handikap": "asian_handicap",
+    "İlk Yarı/Maç Sonucu (İY/MS)": "iyms",
+}
 
 _DISCLAIMERS = {
     "ideal": (
@@ -109,11 +126,33 @@ class DailyPicksService:
         elif len(picks) < limit:
             note = f"Bu kriterleri karşılayan yalnızca {len(picks)} gerçek maç bulundu."
 
+        await self._record_for_accuracy(picks)
+
         return DailyPicksResponse(
             generated_at=datetime.now(timezone.utc), target_date=target, category=category,
             picks=picks, candidates_considered=len(analyzed),
             disclaimer=_DISCLAIMERS[category], note=note,
         )
+
+    @staticmethod
+    async def _record_for_accuracy(picks: list[PickCandidate]) -> None:
+        """Best-effort: every real pick shown to a user is logged for the
+        admin panel's won/lost accuracy tracking. Never raises -- a tracking
+        failure (Supabase down, not configured, etc.) must never break the
+        picks response itself."""
+        for pick in picks:
+            market_type = _ACCURACY_MARKET_CODES.get(pick.market)
+            if market_type is None:
+                continue
+            try:
+                await accuracy.save_prediction({
+                    "match_id": pick.match_id, "kickoff": pick.kickoff.isoformat(),
+                    "competition": pick.league_name, "home_team": pick.home_team, "away_team": pick.away_team,
+                    "market_type": market_type, "selection": pick.selection,
+                    "market_probability": pick.confidence,
+                })
+            except Exception:
+                pass
 
     @staticmethod
     def _build_ideal(analyzed: list[_Analyzed], limit: int) -> list[PickCandidate]:
