@@ -75,9 +75,14 @@ class PredictionEngine:
             market_comparison.market_implied,
         )
 
+        # top_n=6: there are only 6 non-routine İY/MS combinations in total
+        # (9 minus the 3 routine 1/1, X/X, 2/2) -- exposing all of them (not
+        # just the previous top 3) lets the "İY/MS Sürpriz 4'lü" daily-picks
+        # engine diversify its 4 picks across different combinations instead
+        # of always surfacing whichever single combo wins on one match.
         surprises = rank_surprises(
             htft, ensemble.ensemble_1x2, home_profile, away_profile, ensemble.model_agreement,
-            market_comparison, dataset.odds_markets
+            market_comparison, dataset.odds_markets, top_n=6,
         )
 
         sanity_flags = self._sanity_engine.run_all_checks(

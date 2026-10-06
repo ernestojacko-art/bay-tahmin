@@ -11,6 +11,7 @@ from app.core.config import Settings, get_settings, get_team_strength_weights
 from app.providers.base import BaseFootballDataProvider
 from app.providers.registry import get_active_provider
 from app.services.analysis_service import AnalysisService
+from app.services.daily_picks_service import DailyPicksService
 
 
 def get_provider() -> BaseFootballDataProvider:
@@ -19,6 +20,10 @@ def get_provider() -> BaseFootballDataProvider:
 
 def get_analysis_service() -> AnalysisService:
     return AnalysisService(get_provider(), get_settings(), get_team_strength_weights())
+
+
+def get_daily_picks_service() -> DailyPicksService:
+    return DailyPicksService(get_analysis_service())
 
 
 @lru_cache

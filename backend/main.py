@@ -4,11 +4,12 @@ import uuid
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.deps import get_analysis_service, get_chat_orchestrator
+from app.api.deps import get_analysis_service, get_chat_orchestrator, get_daily_picks_service
 from app.main import app as intelligence_app
+from app.services.fixture_selection import istanbul_today
 
 import five_dollar_bridge as five
 
@@ -197,6 +198,40 @@ async def legacy_general_chat(request: Request):
     result = await get_chat_orchestrator().handle_message(
         session_id, message, str(match_id) if match_id is not None else None
     )
+    return result.model_dump(mode="json")
+
+
+# ---------------------------------------------------------------------------
+# NOTE (2026-10-05): "İdeal 4'lü" / "Sürpriz 4'lü" / "İY/MS Sürpriz 4'lü" used
+# to be three free-text prompts sent to /chat (a general-purpose LLM chat
+# endpoint) from bay-tahmin-pro's PredictionHub.tsx. That meant: no real
+# selection algorithm, no multi-market coverage, and "Sürpriz 4'lü" /
+# "İY/MS Sürpriz 4'lü" both landing on the exact same chat intent and
+# returning the same matches. These three endpoints replace that with a
+# deterministic pipeline (see app/services/daily_picks_service.py) -- the
+# frontend cards should call these directly instead of /chat.
+# ---------------------------------------------------------------------------
+
+
+def _target_date(date_param: str | None) -> date:
+    return date.fromisoformat(date_param) if date_param else istanbul_today()
+
+
+@app.get("/picks/ideal", tags=["daily-picks"])
+async def picks_ideal(date: str | None = Query(default=None)):
+    result = await get_daily_picks_service().build("ideal", _target_date(date))
+    return result.model_dump(mode="json")
+
+
+@app.get("/picks/surprise", tags=["daily-picks"])
+async def picks_surprise(date: str | None = Query(default=None)):
+    result = await get_daily_picks_service().build("surprise", _target_date(date))
+    return result.model_dump(mode="json")
+
+
+@app.get("/picks/iyms-surprise", tags=["daily-picks"])
+async def picks_iyms_surprise(date: str | None = Query(default=None)):
+    result = await get_daily_picks_service().build("iyms_surprise", _target_date(date))
     return result.model_dump(mode="json")
 
 
