@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
+from app.cache.cache import TTLCache
 from app.core.exceptions import BayTahminError
 from app.intelligence import multi_market_engine as mme
 from app.providers.models import Fixture, MatchRawDataset
@@ -34,12 +35,26 @@ import accuracy
 
 ISTANBUL = ZoneInfo("Europe/Istanbul")
 
-# Analyzing a fixture means several outbound calls to the data provider
-# (team history, H2H, odds). An unfiltered day can have hundreds of
-# fixtures across dozens of leagues; walking all of them risks hitting the
-# provider's rate limit and returning nothing. This mirrors the same cap
-# already used by `ChatOrchestrator._daily_surprises`.
-MAX_CANDIDATES = 40
+# Analyzing one fixture means ~5+ outbound calls to the data provider
+# (fixture detail, home team league history, away team league history, H2H,
+# odds) -- and each of those can itself page through the provider's full
+# league fixture list. 5DollarFootballAPI is a budget plan with a daily
+# request credit cap, and a cold start (Render free-tier spin-down) wipes
+# every in-memory cache, so a worst case of MAX_CANDIDATES fixtures x 3
+# categories after a cold start can burn through a day's credit in minutes
+# (confirmed in production 2026-10-06/07: "günlük kredi limitine takıldık").
+# Keep this modest -- a real day rarely has more real, odds-open fixtures
+# than this anyway.
+MAX_CANDIDATES = 15
+
+# Response-level cache: once a category has been built for a given date,
+# reuse it for a while instead of re-running the full analysis pipeline on
+# every page load/poll. This is on top of (not a replacement for) the
+# per-match caches in AnalysisService -- it's what actually stops repeated
+# visits to the same day from re-fanning-out into dozens of fresh provider
+# calls each time.
+_PICKS_CACHE_TTL_SECONDS = 15 * 60
+_picks_response_cache = TTLCache(default_ttl_seconds=_PICKS_CACHE_TTL_SECONDS)
 
 # Maps a PickCandidate.market display label to the internal prediction_type
 # code `accuracy.py` knows how to resolve against a finished fixture (see
@@ -107,6 +122,11 @@ class DailyPicksService:
         if category not in _DISCLAIMERS:
             raise ValueError(f"Unknown picks category: {category!r}")
 
+        cache_key = f"{category}:{target.isoformat()}:{limit}"
+        cached = _picks_response_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         fixtures = await self._future_fixtures(target)
         analyzed = await self._analyze_all(fixtures)
 
@@ -128,11 +148,13 @@ class DailyPicksService:
 
         await self._record_for_accuracy(picks)
 
-        return DailyPicksResponse(
+        result = DailyPicksResponse(
             generated_at=datetime.now(timezone.utc), target_date=target, category=category,
             picks=picks, candidates_considered=len(analyzed),
             disclaimer=_DISCLAIMERS[category], note=note,
         )
+        _picks_response_cache.set(cache_key, result)
+        return result
 
     @staticmethod
     async def _record_for_accuracy(picks: list[PickCandidate]) -> None:

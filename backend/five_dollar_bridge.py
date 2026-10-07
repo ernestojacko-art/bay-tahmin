@@ -295,17 +295,6 @@ async def get_matches(date=None):
         if cached and now_ts - cached[0] < _MATCH_STALE_TTL_SECONDS:
             result = dict(cached[1]); result["cache"] = {"hit": True, "stale": True}; return result
         raise
-    # TEMP DIAGNOSTIC (2026-10-06): user reported 0 matches for a date with
-    # many real fixtures (incl. national team matches). Logging the raw
-    # upstream count + league breakdown to find out whether 5DollarFootballAPI
-    # itself returned nothing for this window, or something downstream drops
-    # rows. Remove once the root cause is confirmed.
-    import logging as _logging
-    _logging.getLogger("five_dollar_bridge").info(
-        "get_matches diag: date=%s window=[%s,%s) raw_fixture_count=%d leagues=%s",
-        cache_key, start, end, len(rows_raw),
-        sorted({(x.get("league") or {}).get("name") for x in rows_raw if (x.get("league") or {}).get("name")}),
-    )
     rows = [_fixture_row(x) for x in rows_raw]
     result = {"data": rows, "source": "5dollarfootballapi", "cache": {"hit": False}, "live": {"count": sum(x["Status"] == "live" for x in rows), "source": "5dollarfootballapi"}}
     _MATCH_CACHE[cache_key] = (now_ts, result)
