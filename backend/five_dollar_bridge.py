@@ -128,6 +128,23 @@ async def _get(path: str, params: dict | None = None, *, retries: int = 0):
                 if payload.get("success") != 1:
                     raise HTTPException(status_code=502, detail=f"5DollarFootballAPI hatası: {payload}")
 
+                # TEMP DIAGNOSTIC (2026-10-07): user confirms this is a paid
+                # monthly plan, not a daily-credit issue, so "fixtures" coming
+                # back empty with success=1 needs a closer look at exactly
+                # what the provider sent back (data length, pagination info,
+                # any other top-level keys) rather than just the row count.
+                # Remove once the root cause is confirmed.
+                if path == "fixtures":
+                    import logging as _logging
+                    _data = payload.get("data")
+                    _logging.getLogger("five_dollar_bridge").info(
+                        "fixtures diag: params=%s top_level_keys=%s data_type=%s data_len=%s pagination=%s sample=%s",
+                        params, sorted(payload.keys()), type(_data).__name__,
+                        len(_data) if isinstance(_data, list) else "n/a",
+                        payload.get("pagination"),
+                        str(payload)[:600],
+                    )
+
                 _API_CACHE[cache_key] = (datetime.now(timezone.utc).timestamp(), payload)
                 if path.startswith("fixtures/") and path.count("/") == 1:
                     _FIXTURE_DETAIL_CACHE[cache_key] = _API_CACHE[cache_key]
