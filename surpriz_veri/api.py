@@ -3,12 +3,15 @@
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
+import logging
 import time
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 import os
+
+logger = logging.getLogger("surpriz_veri.api")
 
 from .config import CONFIG
 from .data_mapper import map_fixture_to_match_record
@@ -349,6 +352,7 @@ def fixtures(
             per_page=per_page,
         )
     except FootballAPIError as exc:
+        logger.exception("FootballAPIError: %s", exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
@@ -382,6 +386,7 @@ def weekly_fixtures(
             combined.extend(client.flatten_fixture_list(payload))
             cursor = chunk_end + 1
     except FootballAPIError as exc:
+        logger.exception("FootballAPIError: %s", exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     unique: Dict[str, Dict[str, Any]] = {}
@@ -397,6 +402,7 @@ def fixture(fixture_id: int) -> Dict[str, Any]:
     try:
         return _client().fixture(fixture_id)
     except FootballAPIError as exc:
+        logger.exception("FootballAPIError: %s", exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
@@ -405,6 +411,7 @@ def fixture_odds(fixture_id: int) -> Dict[str, Any]:
     try:
         return _client().fixture_odds(fixture_id)
     except FootballAPIError as exc:
+        logger.exception("FootballAPIError: %s", exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
@@ -419,6 +426,7 @@ def fixture_odds_history(
             market=market,
         )
     except FootballAPIError as exc:
+        logger.exception("FootballAPIError: %s", exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
@@ -528,6 +536,7 @@ def analyze(
         }
 
     except FootballAPIError as exc:
+        logger.exception("FootballAPIError: %s", exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(
