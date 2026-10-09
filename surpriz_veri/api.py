@@ -8,9 +8,12 @@ import time
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
+import os
+
 from .config import CONFIG
 from .data_mapper import map_fixture_to_match_record
 from .data_provider import FiveDollarFootballAPI, FootballAPIError
+from .nosyapi_provider import NosyAPIClient
 from .ai_analysis import build_ai_note, _team_form
 from .similar_match_finder import find_similar_matches
 from .historical_matcher import build_historical_pools
@@ -47,8 +50,25 @@ app.add_middleware(
 )
 
 
-def _client() -> FiveDollarFootballAPI:
-    return FiveDollarFootballAPI()
+# ---------------------------------------------------------------------------
+# VERİ SAĞLAYICI SEÇİMİ
+#
+# 5DollarFootballAPI hesabımızın aylık ücretli aboneliği yenilenene kadar
+# geçici olarak NosyAPI'ye geçildi (Render'da zaten tanımlı NosyAPI anahtarı
+# kullanılır). Bu değişiklik SADECE Sürpriz Veri servisini kapsar; ana Bay
+# Tahmin backend'i (backend/) hâlâ 5DollarFootballAPI ile çalışmaya devam
+# eder ve bu dosyadan etkilenmez.
+#
+# Abonelik yenilendiğinde geri dönmek için:
+#   Render ortam değişkenlerine SURPRISE_DATA_PROVIDER=5dollar eklemek yeterli.
+# ---------------------------------------------------------------------------
+_DATA_PROVIDER = os.getenv("SURPRISE_DATA_PROVIDER", "nosyapi").strip().lower()
+
+
+def _client():
+    if _DATA_PROVIDER in ("5dollar", "5dollarfootball", "5dollarfootballapi"):
+        return FiveDollarFootballAPI()
+    return NosyAPIClient()
 
 
 def _rows(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -281,7 +301,7 @@ def root() -> Dict[str, Any]:
         "status": "online",
         "service": "Sürpriz Veri",
         "engine": "Independent Surprise Data Engine",
-        "data_provider": "5DollarFootballAPI",
+        "data_provider": "5DollarFootballAPI" if _DATA_PROVIDER.startswith("5dollar") else "NosyAPI",
     }
 
 
