@@ -362,6 +362,13 @@ def admin_env_check() -> Dict[str, Any]:
     return result
 
 
+@app.get("/admin/env-check-v2", tags=["admin"])
+def admin_env_check_v2() -> Dict[str, Any]:
+    """admin_env_check ile aynı; yalnızca önbellekten etkilenmeyen taze
+    bir URL olarak eklendi (teşhis amaçlı, sonra kaldırılacak)."""
+    return admin_env_check()
+
+
 @app.get("/config")
 def config() -> Dict[str, Any]:
     return {
