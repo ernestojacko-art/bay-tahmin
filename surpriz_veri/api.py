@@ -313,60 +313,6 @@ def health() -> Dict[str, Any]:
     return {"status": "healthy", "service": "surpriz-veri"}
 
 
-@app.get("/admin/env-check", tags=["admin"])
-def admin_env_check() -> Dict[str, Any]:
-    """Geçici tanı ucu: NosyAPI anahtarı neden bulunamıyor sorununu
-    teşhis etmek için yalnızca ortam değişkeni ADLARINI (değer değil)
-    ve her birinin dolu/boş olduğunu döndürür. Hiçbir secret değer
-    döndürülmez. Teşhis tamamlanınca kaldırılacaktır.
-    """
-    from .nosyapi_provider import _API_KEY_ENV_NAMES, _SECRET_FILE_DIR, _read_secret_file
-
-    relevant = {}
-    for key in sorted(os.environ.keys()):
-        if "NOSY" in key.upper() or "5DOLLAR" in key.upper() or "FIVE_DOLLAR" in key.upper() or "SURPRISE" in key.upper():
-            value = os.environ.get(key, "")
-            relevant[key] = {
-                "present": True,
-                "length": len(value),
-                "is_empty": value.strip() == "",
-            }
-
-    secret_files: Dict[str, Any] = {}
-    try:
-        for fname in sorted(os.listdir(_SECRET_FILE_DIR)):
-            content = _read_secret_file(fname)
-            secret_files[fname] = {
-                "present": True,
-                "length": len(content) if content else 0,
-                "is_empty": not bool(content),
-            }
-    except OSError as exc:
-        secret_files = {"_error": str(exc)}
-
-    resolved_key_found = False
-    for name in _API_KEY_ENV_NAMES:
-        if os.getenv(name) or _read_secret_file(name):
-            resolved_key_found = True
-            break
-
-    result = {
-        "matching_env_var_names": relevant,
-        "secret_files_dir": _SECRET_FILE_DIR,
-        "secret_files_found": secret_files,
-        "checked_candidates": list(_API_KEY_ENV_NAMES),
-        "total_env_var_count": len(os.environ),
-        "resolved_key_found": resolved_key_found,
-    }
-    logger.info("env-check result: %s", result)
-    return result
-
-
-@app.get("/admin/env-check-v2", tags=["admin"])
-def admin_env_check_v2() -> Dict[str, Any]:
-    """admin_env_check ile aynı; yalnızca önbellekten etkilenmeyen taze
-    bir URL olarak eklendi (teşhis amaçlı, sonra kaldırılacak)."""
-    return admin_env_check()
 
 
 @app.get("/config")
