@@ -320,7 +320,7 @@ def admin_env_check() -> Dict[str, Any]:
     ve her birinin dolu/boş olduğunu döndürür. Hiçbir secret değer
     döndürülmez. Teşhis tamamlanınca kaldırılacaktır.
     """
-    from .nosyapi_provider import _API_KEY_ENV_NAMES
+    from .nosyapi_provider import _API_KEY_ENV_NAMES, _SECRET_FILE_DIR, _read_secret_file
 
     relevant = {}
     for key in sorted(os.environ.keys()):
@@ -332,10 +332,31 @@ def admin_env_check() -> Dict[str, Any]:
                 "is_empty": value.strip() == "",
             }
 
+    secret_files: Dict[str, Any] = {}
+    try:
+        for fname in sorted(os.listdir(_SECRET_FILE_DIR)):
+            content = _read_secret_file(fname)
+            secret_files[fname] = {
+                "present": True,
+                "length": len(content) if content else 0,
+                "is_empty": not bool(content),
+            }
+    except OSError as exc:
+        secret_files = {"_error": str(exc)}
+
+    resolved_key_found = False
+    for name in _API_KEY_ENV_NAMES:
+        if os.getenv(name) or _read_secret_file(name):
+            resolved_key_found = True
+            break
+
     return {
         "matching_env_var_names": relevant,
+        "secret_files_dir": _SECRET_FILE_DIR,
+        "secret_files_found": secret_files,
         "checked_candidates": list(_API_KEY_ENV_NAMES),
         "total_env_var_count": len(os.environ),
+        "resolved_key_found": resolved_key_found,
     }
 
 

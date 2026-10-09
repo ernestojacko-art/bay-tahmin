@@ -52,6 +52,23 @@ _API_KEY_ENV_NAMES = (
     "NOSY_API_TOKEN",
 )
 
+# Render'da bu değer normal bir "Environment Variable" değil, bir
+# "Secret File" olarak eklendi. Secret File'lar os.environ'da GÖRÜNMEZ;
+# Render bunları disk üzerinde /etc/secrets/<dosya adı> yoluna mount
+# eder ve dosyanın İÇERİĞİ secret değerdir. Bu yüzden aynı aday adlar
+# hem ortam değişkeni hem de /etc/secrets altında dosya olarak denenir.
+_SECRET_FILE_DIR = "/etc/secrets"
+
+
+def _read_secret_file(name: str) -> Optional[str]:
+    path = os.path.join(_SECRET_FILE_DIR, name)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            value = fh.read().strip()
+    except OSError:
+        return None
+    return value or None
+
 
 def _resolve_api_key(explicit: Optional[str]) -> Optional[str]:
     if explicit:
@@ -60,7 +77,23 @@ def _resolve_api_key(explicit: Optional[str]) -> Optional[str]:
         value = os.getenv(name)
         if value:
             return value
+    for name in _API_KEY_ENV_NAMES:
+        value = _read_secret_file(name)
+        if value:
+            return value
     return None
+
+
+def _resolve_base_url(explicit: Optional[str]) -> str:
+    if explicit:
+        return explicit
+    value = os.getenv("NOSYAPI_BASE_URL")
+    if value:
+        return value
+    value = _read_secret_file("NOSYAPI_BASE_URL")
+    if value:
+        return value
+    return DEFAULT_BASE_URL
 
 
 def _to_float(value: Any) -> Optional[float]:
@@ -183,7 +216,7 @@ class NosyAPIClient:
         timeout: int = 30,
     ):
         self.api_key = _resolve_api_key(api_key)
-        self.base_url = (base_url or os.getenv("NOSYAPI_BASE_URL", DEFAULT_BASE_URL)).rstrip("/")
+        self.base_url = _resolve_base_url(base_url).rstrip("/")
         self.timeout = timeout
         self._request_times: deque = deque(maxlen=30)
         # leagues() tarafından doldurulur; league_fixtures() sentetik
@@ -194,8 +227,9 @@ class NosyAPIClient:
         if not self.api_key:
             raise FootballAPIError(
                 "NosyAPI anahtarı bulunamadı. Render'da şu ortam "
-                "değişkenlerinden birini tanımlayın: "
-                + ", ".join(_API_KEY_ENV_NAMES)
+                "değişkenlerinden birini (normal env var ya da "
+                f"{_SECRET_FILE_DIR}/ altında Secret File olarak) "
+                "tanımlayın: " + ", ".join(_API_KEY_ENV_NAMES)
             )
 
     def _get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
