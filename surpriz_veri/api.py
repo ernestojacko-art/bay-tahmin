@@ -313,6 +313,32 @@ def health() -> Dict[str, Any]:
     return {"status": "healthy", "service": "surpriz-veri"}
 
 
+@app.get("/admin/env-check", tags=["admin"])
+def admin_env_check() -> Dict[str, Any]:
+    """Geçici tanı ucu: NosyAPI anahtarı neden bulunamıyor sorununu
+    teşhis etmek için yalnızca ortam değişkeni ADLARINI (değer değil)
+    ve her birinin dolu/boş olduğunu döndürür. Hiçbir secret değer
+    döndürülmez. Teşhis tamamlanınca kaldırılacaktır.
+    """
+    from .nosyapi_provider import _API_KEY_ENV_NAMES
+
+    relevant = {}
+    for key in sorted(os.environ.keys()):
+        if "NOSY" in key.upper() or "5DOLLAR" in key.upper() or "FIVE_DOLLAR" in key.upper() or "SURPRISE" in key.upper():
+            value = os.environ.get(key, "")
+            relevant[key] = {
+                "present": True,
+                "length": len(value),
+                "is_empty": value.strip() == "",
+            }
+
+    return {
+        "matching_env_var_names": relevant,
+        "checked_candidates": list(_API_KEY_ENV_NAMES),
+        "total_env_var_count": len(os.environ),
+    }
+
+
 @app.get("/config")
 def config() -> Dict[str, Any]:
     return {
