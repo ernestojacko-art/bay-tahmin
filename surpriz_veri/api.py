@@ -350,7 +350,7 @@ def admin_env_check() -> Dict[str, Any]:
             resolved_key_found = True
             break
 
-    return {
+    result = {
         "matching_env_var_names": relevant,
         "secret_files_dir": _SECRET_FILE_DIR,
         "secret_files_found": secret_files,
@@ -358,6 +358,8 @@ def admin_env_check() -> Dict[str, Any]:
         "total_env_var_count": len(os.environ),
         "resolved_key_found": resolved_key_found,
     }
+    logger.info("env-check result: %s", result)
+    return result
 
 
 @app.get("/config")
