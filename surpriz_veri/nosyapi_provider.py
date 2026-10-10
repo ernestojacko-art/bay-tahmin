@@ -3,8 +3,12 @@ SÜRPRİZ VERİ - NosyAPI Data Provider
 
 5DollarFootballAPI'nin aylık ücretli hesabı yenilenene kadar geçici
 yedek veri sağlayıcısı. NosyAPI'nin ücretsiz/aylık kota ile çalışan
-"İddaa Oranları ve Programı" + "İddaa Maç Sonuçları" servislerini
-kullanır.
+"İddaa Oranları ve Programı" servisini (bettable-matches ailesi) hem
+güncel/gelecek program hem de GEÇMİŞ tarihli tarama için kullanır;
+ayrıca tek maç sonucu için "bettable-result" servisini kullanır.
+(Not: Önceden burada var sayılan ayrı bir "matches-result" toplu
+tarihsel sonuç servisi YOKTUR — NosyAPI'nin resmi sayfalarında böyle
+bir endpoint bulunmuyor; bkz. historical_results() docstring'i.)
 
 Önemli:
     Bu modül SADECE Sürpriz Veri (surpriz_veri/) servisi içindir.
@@ -502,65 +506,115 @@ class NosyAPIClient:
         day_cap: Optional[int] = None,
         max_records: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
-        """Belirtilen pencerede tamamlanmış maçları GÜN BAŞINA TEK SEFER
-        tarayarak (tüm ligler dahil) döndürür.
+        """Geçmiş günlerdeki maçları tarar.
 
-        Önceki tasarım her lig için ayrı ayrı aynı günün sonuçlarını
-        tekrar tekrar çekiyordu (lig sayısı x gün sayısı kadar istek);
-        bu hem NosyAPI'nin düşük dakikalık kota sınırında dakikalarca
-        beklemeye hem de `leagues()` ayrıştırması herhangi bir nedenle
-        boş dönerse (lig listesi hiç gelmezse) tüm tarihsel havuzun
-        sessizce boş kalmasına yol açıyordu. Burada lig listesine hiç
-        ihtiyaç duyulmaz: zaten maç karşılaştırması lige bağlı değildir
-        (bkz. api.py _historical_matches açıklaması).
+        ÖNEMLİ DÜZELTME: Daha önce burada "matches-result" diye bir
+        endpoint çağrılıyordu. NosyAPI'nin resmi dokümantasyonunda
+        (www.nosyapi.com/api/iddaa-oranlari-ve-programi-sonuclari-api)
+        böyle bir endpoint YOK — orada yalnızca `bettable-result`
+        (tek maç, matchID ile) ve `bettable-result/details` var. Bu
+        yüzden her çağrı NosyAPI tarafından "Hesabınıza Tanımlı Uygun
+        Kayıt Bulunamadı" (HTTP 401) ile reddediliyordu; bu bir hesap/
+        abonelik sorunu değil, var olmayan bir yola istek atma hatasıydı.
+
+        Doğrusu: `bettable-matches` (program) endpoint'i zaten geçmiş
+        tarihlerle de sorgulanabiliyor ve döndürdüğü satırlar kapanış
+        anındaki HomeWin/Draw/AwayWin oranlarını içeriyor (maç bittikten
+        sonra bu alanlar güncellenmeyip kapanış değeri olarak kalıyor
+        gibi görünüyor). Bu yüzden aynı `bettable-matches` çağrısı
+        geçmiş `date` değerleriyle tekrar kullanılır.
+
+        Maliyet uyarısı: NosyAPI kredisi dönen KAYIT SAYISI kadar düşer
+        ve bu endpoint bir per_page/limit parametresi sunmuyor; bir
+        günün TÜM bülteni (yüzlerce maç olabilir) tam kredi bedeliyle
+        gelir. Bu yüzden day_cap varsayılanı kasıtlı olarak düşük
+        tutulur (bkz. NOSYAPI_HISTORICAL_DAY_SCAN_CAP).
         """
 
         now_utc = datetime.now(timezone.utc)
-        end_dt = datetime.fromtimestamp(end_time, tz=timezone.utc) if end_time else now_utc
-        start_dt = (
-            datetime.fromtimestamp(start_time, tz=timezone.utc)
-            if start_time
-            else end_dt - timedelta(days=10)
-        )
-
-        day_cap = day_cap if day_cap is not None else int(os.getenv("NOSYAPI_HISTORICAL_DAY_SCAN_CAP", "10"))
+        day_cap = day_cap if day_cap is not None else int(os.getenv("NOSYAPI_HISTORICAL_DAY_SCAN_CAP", "3"))
         max_records = max_records if max_records is not None else int(
             os.getenv("NOSYAPI_HISTORICAL_MAX_RECORDS", "400")
         )
 
-        end_day = end_dt.astimezone(ISTANBUL).date()
-        start_day = start_dt.astimezone(ISTANBUL).date()
-        total_days = (end_day - start_day).days + 1
-        days_to_scan = min(total_days, day_cap)
+        end_day = now_utc.astimezone(ISTANBUL).date()
 
         fixtures: List[Dict[str, Any]] = []
-        for offset in range(days_to_scan):
+        diag_sample_logged = False
+        for offset in range(1, day_cap + 1):  # bugünü değil, geçmiş günleri tara
             if len(fixtures) >= max_records:
                 break
             day = end_day - timedelta(days=offset)
             try:
                 payload = self._get(
-                    "matches-result",
+                    "bettable-matches",
                     params={"type": 1, "date": day.isoformat()},
                 )
             except FootballAPIError as exc:
-                logger.warning("matches-result %s failed: %s", day, exc)
+                logger.warning("historical bettable-matches %s failed: %s", day, exc)
                 continue
             data = payload.get("data")
             day_rows = [r for r in data if isinstance(r, dict)] if isinstance(data, list) else []
-            logger.info("matches-result %s -> %d satır", day, len(day_rows))
-            if day_rows and offset == 0:
-                logger.info("matches-result örnek satır anahtarları=%s", sorted(day_rows[0].keys()))
+            logger.info("historical bettable-matches %s -> %d satır", day, len(day_rows))
+
             for row in day_rows:
+                kickoff = _parse_kickoff_utc(row)
+                is_past = False
+                if kickoff:
+                    try:
+                        is_past = datetime.fromisoformat(kickoff) < now_utc
+                    except ValueError:
+                        is_past = False
+                if not is_past:
+                    # Bugünün bülteninde henüz oynanmamış/ilerideki maçlar da
+                    # olabilir; bunlar tarihsel kanıt olarak kullanılamaz.
+                    continue
+
+                if not diag_sample_logged:
+                    diag_sample_logged = True
+                    logger.info(
+                        "TANI geçmiş maç örnek: MatchID=%s MatchResult=%r Result=%r "
+                        "GameResult=%r LiveStatus=%r HomeWin=%r Draw=%r AwayWin=%r",
+                        row.get("MatchID"), row.get("MatchResult"), row.get("Result"),
+                        row.get("GameResult"), row.get("LiveStatus"),
+                        row.get("HomeWin"), row.get("Draw"), row.get("AwayWin"),
+                    )
+                    match_id = row.get("MatchID") or row.get("matchID")
+                    if match_id:
+                        try:
+                            result_payload = self._get(
+                                "bettable-result", params={"matchID": match_id}
+                            )
+                            br = result_payload.get("data", {})
+                            br_list = br.get("bettableResult") if isinstance(br, dict) else None
+                            logger.info(
+                                "TANI bettable-result matchID=%s -> üst alanlar=%s, "
+                                "bettableResult(ilk 15)=%r",
+                                match_id,
+                                sorted(br.keys()) if isinstance(br, dict) else type(br).__name__,
+                                (br_list[:15] if isinstance(br_list, list) else br_list),
+                            )
+                        except FootballAPIError as exc:
+                            logger.warning(
+                                "TANI bettable-result matchID=%s failed: %s", match_id, exc
+                            )
+
                 fixtures.append(_row_to_fixture(row, finished=True))
                 if len(fixtures) >= max_records:
                     break
 
         logger.info(
-            "historical_results(): %d gün tarandı, %d fixture toplandı",
-            days_to_scan, len(fixtures),
+            "historical_results(): %d gün (geçmiş) tarandı, %d fixture toplandı",
+            day_cap, len(fixtures),
         )
         return fixtures
+
+    def fixture_result(self, match_id: int) -> Dict[str, Any]:
+        """Tek bir maçın gerçekleşmiş bahis sonuçlarını (bettable-result)
+        döndürür. NosyAPI'de bunun dışında toplu/tarihsel bir sonuç
+        endpoint'i yoktur (bkz. historical_results() docstring'i).
+        """
+        return self._get("bettable-result", params={"matchID": match_id})
 
     def league_fixtures(
         self,
