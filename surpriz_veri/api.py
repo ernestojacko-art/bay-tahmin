@@ -11,7 +11,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import os
 
+# uvicorn kendi root logger handler'ını önceden kurmuş olabilir; force=True
+# ile seviyeyi INFO'ya zorlamak, aksi halde WARNING eşiği yüzünden
+# tanı amaçlı logger.info(...) çağrılarının sessizce yutulmasını önler.
+logging.basicConfig(level=logging.INFO, force=True)
 logger = logging.getLogger("surpriz_veri.api")
+logging.getLogger("surpriz_veri.nosyapi_provider").setLevel(logging.INFO)
 
 from .config import CONFIG
 from .data_mapper import map_fixture_to_match_record
@@ -98,87 +103,104 @@ def _historical_matches(days: int, current=None) -> List[HistoricalMatch]:
     start_ts = int(start_dt.timestamp())
     end_ts = int(end_dt.timestamp())
 
-    # Önce tarih aralığında aktif olan tüm futbol liglerini al.
-    leagues: List[Dict[str, Any]] = []
-    page = 1
-    while page <= 20:
-        try:
-            payload = client.leagues(
-                active_since=start_ts,
-                page=page,
-                per_page=100,
-            )
-        except FootballAPIError:
-            break
-
-        data = payload.get("data", [])
-        if isinstance(data, dict):
-            data = (
-                data.get("leagues")
-                or data.get("items")
-                or data.get("results")
-                or []
-            )
-        if not isinstance(data, list) or not data:
-            break
-
-        leagues.extend(x for x in data if isinstance(x, dict))
-
-        pagination = payload.get("pagination", {})
-        if not isinstance(pagination, dict) or not pagination.get("has_more"):
-            break
-        page += 1
-
-    # Aynı lig birden fazla sayfadan gelirse tekilleştir.
-    league_ids: List[int] = []
-    seen_leagues = set()
-    for league in leagues:
-        league_id = league.get("id")
-        if league_id is None:
-            continue
-        try:
-            league_id = int(league_id)
-        except (TypeError, ValueError):
-            continue
-        if league_id not in seen_leagues:
-            seen_leagues.add(league_id)
-            league_ids.append(league_id)
-
     fixtures: List[Dict[str, Any]] = []
 
-    # Analiz isteği içinde bütün ligleri ve sayfaları taramak, 10/dk
-    # API sınırında dakikalarca beklemeye neden oluyordu. Her analizde
-    # sınırlı sayıda toplu sayfa alınır; alınan gerçek kayıtlar 6 saat cache edilir.
-    # Per-fixture odds çağrıları özellikle yapılmaz.
-    fixtures: List[Dict[str, Any]] = []
-    scan_budget = 8
-    for league_id in league_ids:
-        if scan_budget <= 0:
-            break
+    if isinstance(client, NosyAPIClient):
+        # NosyAPI'nin tarihsel sonuç servisi (matches-result) lige göre
+        # değil TARİHE göre sorgulanır ve o günün TÜM liglerini tek
+        # yanıtta döndürür. Önceki tasarım önce leagues() ile lig
+        # listesi çekip sonra HER lig için AYNI günün sonuçlarını tekrar
+        # tekrar istiyordu - hem gereksiz yere yavaş (lig x gün kadar
+        # istek, NosyAPI'nin düşük dakikalık kotasında dakikalarca
+        # sürüyordu) hem de leagues() ayrıştırması herhangi bir nedenle
+        # boş dönerse (ör. yanıt şeması beklenenden farklıysa) tüm
+        # tarihsel havuzun sessizce boş kalmasına yol açıyordu. Lig
+        # eşleşmesi zaten istenmiyor (bkz. yukarıdaki açıklama), bu
+        # yüzden gün bazlı toplu tarama doğrudan kullanılır.
         try:
-            payload = client.league_fixtures(
-                league_id=league_id,
+            fixtures = client.historical_results(
                 start_time=start_ts,
                 end_time=end_ts,
-                status="finished",
-                include="odds,events,stats",
-                page=1,
-                per_page=50,
-                order="desc",
             )
         except FootballAPIError:
-            continue
-        scan_budget -= 1
-        fixtures.extend(_rows(payload))
+            fixtures = []
+        logger.info("_historical_matches(): NosyAPI toplu tarama -> %d fixture", len(fixtures))
+    else:
+        # Önce tarih aralığında aktif olan tüm futbol liglerini al.
+        leagues: List[Dict[str, Any]] = []
+        page = 1
+        while page <= 20:
+            try:
+                payload = client.leagues(
+                    active_since=start_ts,
+                    page=page,
+                    per_page=100,
+                )
+            except FootballAPIError:
+                break
+
+            data = payload.get("data", [])
+            if isinstance(data, dict):
+                data = (
+                    data.get("leagues")
+                    or data.get("items")
+                    or data.get("results")
+                    or []
+                )
+            if not isinstance(data, list) or not data:
+                break
+
+            leagues.extend(x for x in data if isinstance(x, dict))
+
+            pagination = payload.get("pagination", {})
+            if not isinstance(pagination, dict) or not pagination.get("has_more"):
+                break
+            page += 1
+
+        # Aynı lig birden fazla sayfadan gelirse tekilleştir.
+        league_ids: List[int] = []
+        seen_leagues = set()
+        for league in leagues:
+            league_id = league.get("id")
+            if league_id is None:
+                continue
+            try:
+                league_id = int(league_id)
+            except (TypeError, ValueError):
+                continue
+            if league_id not in seen_leagues:
+                seen_leagues.add(league_id)
+                league_ids.append(league_id)
+
+        # Analiz isteği içinde bütün ligleri ve sayfaları taramak, 10/dk
+        # API sınırında dakikalarca beklemeye neden oluyordu. Her analizde
+        # sınırlı sayıda toplu sayfa alınır; alınan gerçek kayıtlar 6 saat cache edilir.
+        # Per-fixture odds çağrıları özellikle yapılmaz.
+        scan_budget = 8
+        for league_id in league_ids:
+            if scan_budget <= 0:
+                break
+            try:
+                payload = client.league_fixtures(
+                    league_id=league_id,
+                    start_time=start_ts,
+                    end_time=end_ts,
+                    status="finished",
+                    include="odds,events,stats",
+                    page=1,
+                    per_page=50,
+                    order="desc",
+                )
+            except FootballAPIError:
+                continue
+            scan_budget -= 1
+            fixtures.extend(_rows(payload))
 
     result: List[HistoricalMatch] = []
     seen = set()
     odds_fetch_budget = _HISTORICAL_ODDS_FETCH_CAP
 
     for fixture in fixtures:
-        if odds_fetch_budget <= 0:
-            break
-
         fixture_id = fixture.get("id") if isinstance(fixture, dict) else None
         if fixture_id is None or str(fixture_id) in seen:
             continue
@@ -189,6 +211,12 @@ def _historical_matches(days: int, current=None) -> List[HistoricalMatch]:
         # gerçek açılış/kapanış değerini ayrıca çek. Oran bulunamayan
         # bir tarihsel maç, açılış/kapanış havuzlarında hiçbir zaman
         # eşleşmeyeceğinden havuza eklenmesi anlamsızdır.
+        #
+        # odds_fetch_budget yalnızca GERÇEKTEN ek bir ağ isteği
+        # gerektiğinde tüketilir; zaten gömülü oranı olan maçlar için
+        # bütçe harcanmaz ve döngü erken kesilmez - aksi halde liste
+        # içinde zaten oranlı gelen maçlar bile bütçe tükendiği an
+        # sessizce atlanıyordu.
         fixture_odds = (
             fixture.get("odds")
             if isinstance(fixture.get("odds"), dict)
@@ -196,12 +224,13 @@ def _historical_matches(days: int, current=None) -> List[HistoricalMatch]:
         )
 
         if not fixture_odds:
+            if odds_fetch_budget <= 0:
+                continue
             try:
                 fixture_odds = client.fixture_odds(int(fixture_id))
             except (FootballAPIError, TypeError, ValueError):
                 fixture_odds = None
-
-        odds_fetch_budget -= 1
+            odds_fetch_budget -= 1
 
         if not fixture_odds:
             continue
@@ -222,12 +251,16 @@ def _historical_matches(days: int, current=None) -> List[HistoricalMatch]:
             result.append(
                 HistoricalMatch(
                     record=record,
-                    source="5DollarFootballAPI",
+                    source="NosyAPI" if isinstance(client, NosyAPIClient) else "5DollarFootballAPI",
                 )
             )
         except (ValueError, TypeError):
             continue
 
+    logger.info(
+        "_historical_matches(days=%s): %d ham fixture -> %d kullanılabilir tarihsel kayıt",
+        days, len(fixtures), len(result),
+    )
     _HISTORICAL_CACHE[days] = result
     _HISTORICAL_CACHE_AT[days] = time.time()
     return result

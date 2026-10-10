@@ -25,6 +25,7 @@ tutulmuştur (bkz. NOSYAPI_HISTORICAL_DAY_SCAN_CAP).
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from collections import deque
@@ -35,6 +36,8 @@ from zoneinfo import ZoneInfo
 import requests
 
 from .data_provider import FootballAPIError
+
+logger = logging.getLogger("surpriz_veri.nosyapi_provider")
 
 ISTANBUL = ZoneInfo("Europe/Istanbul")
 
@@ -114,28 +117,59 @@ def _to_int(value: Any) -> Optional[int]:
         return None
 
 
+_KICKOFF_PARSE_FAIL_LOG_BUDGET = [8]  # mutable counter: ilk birkaç hatayı logla, sonra sessiz kal
+
+
 def _parse_kickoff_utc(row: Dict[str, Any]) -> Optional[str]:
-    """NosyAPI Date/Time alanlarını (Europe/Istanbul yerel saat) UTC ISO'ya çevirir."""
+    """NosyAPI Date/Time alanlarını (Europe/Istanbul yerel saat) UTC ISO'ya çevirir.
 
-    date_str = row.get("Date")
-    time_str = row.get("Time") or "00:00:00"
-    date_time_str = row.get("DateTime")
+    Alan adı ve biçimi dokümante olmadığından, hem "Date"+"Time" hem de
+    tek parça "DateTime" alanı; hem "YYYY-MM-DD" hem de yaygın Türkçe
+    "DD.MM.YYYY" / "DD/MM/YYYY" biçimleri denenir.
+    """
 
-    raw = None
+    date_str = row.get("Date") or row.get("date") or row.get("MatchDate")
+    time_str = row.get("Time") or row.get("time") or row.get("MatchTime") or "00:00:00"
+    date_time_str = row.get("DateTime") or row.get("dateTime") or row.get("MatchDateTime")
+
+    candidates: List[str] = []
     if date_str:
-        raw = f"{date_str} {time_str}"
-    elif date_time_str:
-        raw = str(date_time_str)
+        candidates.append(f"{date_str} {time_str}".strip())
+    if date_time_str:
+        candidates.append(str(date_time_str).strip())
 
-    if not raw:
+    if not candidates:
+        if _KICKOFF_PARSE_FAIL_LOG_BUDGET[0] > 0:
+            _KICKOFF_PARSE_FAIL_LOG_BUDGET[0] -= 1
+            logger.warning(
+                "kickoff_utc: satırda tarih/saat alanı bulunamadı, mevcut anahtarlar: %s",
+                sorted(row.keys()) if isinstance(row, dict) else type(row),
+            )
         return None
 
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
-        try:
-            local_dt = datetime.strptime(raw.strip(), fmt).replace(tzinfo=ISTANBUL)
-            return local_dt.astimezone(timezone.utc).isoformat()
-        except ValueError:
-            continue
+    formats = (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%dT%H:%M:%S",
+        "%d.%m.%Y %H:%M:%S",
+        "%d.%m.%Y %H:%M",
+        "%d/%m/%Y %H:%M:%S",
+        "%d/%m/%Y %H:%M",
+    )
+    for raw in candidates:
+        for fmt in formats:
+            try:
+                local_dt = datetime.strptime(raw, fmt).replace(tzinfo=ISTANBUL)
+                return local_dt.astimezone(timezone.utc).isoformat()
+            except ValueError:
+                continue
+
+    if _KICKOFF_PARSE_FAIL_LOG_BUDGET[0] > 0:
+        _KICKOFF_PARSE_FAIL_LOG_BUDGET[0] -= 1
+        logger.warning(
+            "kickoff_utc: ayrıştırılamadı, denenen değerler=%s, satır anahtarları=%s",
+            candidates, sorted(row.keys()) if isinstance(row, dict) else type(row),
+        )
     return None
 
 
@@ -314,31 +348,48 @@ class NosyAPIClient:
                     "bettable-matches",
                     params={"type": 1, "date": day.isoformat()},
                 )
-            except FootballAPIError:
+            except FootballAPIError as exc:
+                logger.warning("bettable-matches %s failed: %s", day, exc)
                 continue
             data = payload.get("data")
-            if isinstance(data, list):
-                rows.extend(r for r in data if isinstance(r, dict))
+            day_rows = [r for r in data if isinstance(r, dict)] if isinstance(data, list) else []
+            logger.info("bettable-matches %s -> %d satır", day, len(day_rows))
+            rows.extend(day_rows)
 
         fixtures = [_row_to_fixture(row, finished=False) for row in rows]
+        logger.info(
+            "fixtures(): %d gün tarandı, %d ham satır, %d fixture (filtre öncesi)",
+            day_count, len(rows), len(fixtures),
+        )
 
         # start_time/end_time ile tam saat filtrelemesi (gün bazlı çekim
         # bazen pencerenin dışında kalan maçları da getirebilir).
         if start_time is not None or end_time is not None:
             filtered = []
+            dropped_no_kickoff = 0
+            dropped_out_of_window = 0
             for fx in fixtures:
                 kickoff = fx.get("kickoff_utc")
                 if not kickoff:
+                    dropped_no_kickoff += 1
                     continue
                 try:
                     ts = datetime.fromisoformat(kickoff).timestamp()
                 except ValueError:
+                    dropped_no_kickoff += 1
                     continue
                 if start_time is not None and ts < start_time:
+                    dropped_out_of_window += 1
                     continue
                 if end_time is not None and ts > end_time:
+                    dropped_out_of_window += 1
                     continue
                 filtered.append(fx)
+            logger.info(
+                "fixtures(): zaman penceresi filtresi -> %d kaldı, "
+                "%d kickoff_utc parse edilemediği için, %d pencere dışı olduğu için düştü",
+                len(filtered), dropped_no_kickoff, dropped_out_of_window,
+            )
             fixtures = filtered
 
         return {
@@ -417,6 +468,11 @@ class NosyAPIClient:
 
         payload = self._get("bettable-matches/league", params={"type": 1})
         data = payload.get("data")
+        logger.info(
+            "leagues(): bettable-matches/league ham yanıt tipi=%s, örnek=%r",
+            type(data).__name__,
+            (data[:3] if isinstance(data, list) else data),
+        )
         leagues: List[Dict[str, Any]] = []
         if isinstance(data, list):
             for idx, item in enumerate(data):
@@ -432,7 +488,79 @@ class NosyAPIClient:
                 self._league_name_by_id[league_id] = str(name)
                 leagues.append({"id": league_id, "name": str(name)})
 
+        logger.info("leagues(): %d lig çözüldü", len(leagues))
         return {"data": leagues, "pagination": {"has_more": False}}
+
+    # ------------------------------------------------------------
+    # TARİHSEL TOPLU TARAMA (lig bazlı tekrarlı taramadan kaçınır)
+    # ------------------------------------------------------------
+
+    def historical_results(
+        self,
+        start_time: Optional[int] = None,
+        end_time: Optional[int] = None,
+        day_cap: Optional[int] = None,
+        max_records: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Belirtilen pencerede tamamlanmış maçları GÜN BAŞINA TEK SEFER
+        tarayarak (tüm ligler dahil) döndürür.
+
+        Önceki tasarım her lig için ayrı ayrı aynı günün sonuçlarını
+        tekrar tekrar çekiyordu (lig sayısı x gün sayısı kadar istek);
+        bu hem NosyAPI'nin düşük dakikalık kota sınırında dakikalarca
+        beklemeye hem de `leagues()` ayrıştırması herhangi bir nedenle
+        boş dönerse (lig listesi hiç gelmezse) tüm tarihsel havuzun
+        sessizce boş kalmasına yol açıyordu. Burada lig listesine hiç
+        ihtiyaç duyulmaz: zaten maç karşılaştırması lige bağlı değildir
+        (bkz. api.py _historical_matches açıklaması).
+        """
+
+        now_utc = datetime.now(timezone.utc)
+        end_dt = datetime.fromtimestamp(end_time, tz=timezone.utc) if end_time else now_utc
+        start_dt = (
+            datetime.fromtimestamp(start_time, tz=timezone.utc)
+            if start_time
+            else end_dt - timedelta(days=10)
+        )
+
+        day_cap = day_cap if day_cap is not None else int(os.getenv("NOSYAPI_HISTORICAL_DAY_SCAN_CAP", "10"))
+        max_records = max_records if max_records is not None else int(
+            os.getenv("NOSYAPI_HISTORICAL_MAX_RECORDS", "400")
+        )
+
+        end_day = end_dt.astimezone(ISTANBUL).date()
+        start_day = start_dt.astimezone(ISTANBUL).date()
+        total_days = (end_day - start_day).days + 1
+        days_to_scan = min(total_days, day_cap)
+
+        fixtures: List[Dict[str, Any]] = []
+        for offset in range(days_to_scan):
+            if len(fixtures) >= max_records:
+                break
+            day = end_day - timedelta(days=offset)
+            try:
+                payload = self._get(
+                    "matches-result",
+                    params={"type": 1, "date": day.isoformat()},
+                )
+            except FootballAPIError as exc:
+                logger.warning("matches-result %s failed: %s", day, exc)
+                continue
+            data = payload.get("data")
+            day_rows = [r for r in data if isinstance(r, dict)] if isinstance(data, list) else []
+            logger.info("matches-result %s -> %d satır", day, len(day_rows))
+            if day_rows and offset == 0:
+                logger.info("matches-result örnek satır anahtarları=%s", sorted(day_rows[0].keys()))
+            for row in day_rows:
+                fixtures.append(_row_to_fixture(row, finished=True))
+                if len(fixtures) >= max_records:
+                    break
+
+        logger.info(
+            "historical_results(): %d gün tarandı, %d fixture toplandı",
+            days_to_scan, len(fixtures),
+        )
+        return fixtures
 
     def league_fixtures(
         self,
