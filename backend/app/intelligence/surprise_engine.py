@@ -3,9 +3,13 @@ Surprise Intelligence Engine (spec section 8).
 
 A "surprise" is not simply the least-likely outcome -- it's a football-
 plausible HT/FT combination that diverges from consensus expectation.
-Routine 1/1, X/X, 2/2 combinations are explicitly excluded from being
-ranked as surprises (spec: "Rutin 1/1, X/X ve 2/2 sonuçlarını otomatik
-olarak sürpriz diye sıralama").
+
+UPDATE (kullanıcı talebi, 2026-10-14): "İY/MS Sürpriz 4'lü" ürünü artık
+TÜM 9 İY/MS kombinasyonunu (1/1, 1/X, 1/2, X/1, X/X, X/2, 2/1, 2/X, 2/2)
+değerlendirmeye açık tutuyor -- yalnızca birkaç kombinasyonla (ör. sadece
+X/1 veya X/2) sınırlı kalınmaması açıkça istendi. "Rutin" kombinasyonlar
+(1/1, X/X, 2/2) artık havuzdan otomatik elenmiyor; bunlar da diğerleriyle
+aynı composite-score sıralamasına girip hak ederlerse 4'lü seçime girebilir.
 
 CRITICAL DESIGN RULE (spec section 20): a "surprise" is fundamentally
 defined as a MARKET/MODEL disagreement -- not merely internal model
@@ -28,7 +32,11 @@ from app.schemas.common import DataQuality, RiskLevel
 from app.schemas.prediction import HalfTimeFullTimeProbabilities, MarketComparison, SurpriseCandidate
 from app.schemas.team import TeamStrengthProfile
 
-ROUTINE_COMBINATIONS = {"1/1", "X/X", "2/2"}
+ALL_HTFT_COMBINATIONS = {"1/1", "1/X", "1/2", "X/1", "X/X", "X/2", "2/1", "2/X", "2/2"}
+# Eskiden bu kombinasyonlar havuzdan otomatik elenirdi -- artık elenmiyor
+# (bkz. modül docstring'i), ama isim geriye dönük uyumluluk/okunabilirlik
+# için korunuyor.
+ROUTINE_COMBINATIONS: set[str] = set()
 
 _DESCRIPTIONS = {
     "1/X": "İlk yarı ev sahibi önde, ancak maç beraberlikle sonuçlanıyor.",
@@ -37,6 +45,9 @@ _DESCRIPTIONS = {
     "X/2": "İlk yarı berabere, ikinci yarıda deplasman takımı kontrolü ele alıyor.",
     "2/1": "İlk yarı deplasman önde, ancak ev sahibi maçı çeviriyor.",
     "2/X": "İlk yarı deplasman önde, ancak maç beraberlikle bitiyor.",
+    "1/1": "İlk yarı ev sahibi önde ve maçı o şekilde kapatıyor.",
+    "X/X": "İlk yarı berabere ve maç da beraberlikle bitiyor.",
+    "2/2": "İlk yarı deplasman önde ve maçı o şekilde kapatıyor.",
 }
 
 
