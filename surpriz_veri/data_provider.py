@@ -18,6 +18,7 @@ ayrı veri alanları olarak korunur.
 """
 
 import os
+import threading
 import time
 from collections import deque
 from typing import Any, Dict, List, Optional
@@ -28,6 +29,52 @@ import requests
 DEFAULT_BASE_URL = (
     "https://api.5dollarfootballapi.com/v1"
 )
+
+
+# Hız sınırı durumu TÜM istemci örnekleri arasında paylaşılır (api.py her
+# çağrıda yeni istemci oluşturduğundan, örnek başına sayaç hiçbir şeyi
+# sınırlamıyordu). Kayan pencere: dakikada en fazla `rpm` istek. 429 görülürse
+# rpm düşer, art arda başarılı isteklerde yavaşça tavana (SURPRISE_MAX_RPM)
+# doğru artar.
+_RL_LOCK = threading.Lock()
+_RL_TIMES: deque = deque()
+_RL_STATE = {
+    "rpm": float(os.getenv("SURPRISE_REQUESTS_PER_MINUTE", "9")),
+    "max": float(os.getenv("SURPRISE_MAX_RPM", "30")),
+    "ok": 0,
+}
+
+
+def _acquire_rate_slot() -> None:
+    while True:
+        with _RL_LOCK:
+            now = time.monotonic()
+            while _RL_TIMES and now - _RL_TIMES[0] >= 60:
+                _RL_TIMES.popleft()
+            if len(_RL_TIMES) < max(1, int(_RL_STATE["rpm"])):
+                _RL_TIMES.append(now)
+                return
+            wait = 60 - (now - _RL_TIMES[0]) + 0.05
+        time.sleep(max(wait, 0.05))
+
+
+def _rate_limited(retry_after: float) -> None:
+    with _RL_LOCK:
+        _RL_STATE["rpm"] = max(4.0, _RL_STATE["rpm"] * 0.7)
+        _RL_STATE["ok"] = 0
+    time.sleep(min(max(retry_after, 1.0), 30.0))
+
+
+def _rate_ok() -> None:
+    with _RL_LOCK:
+        _RL_STATE["ok"] += 1
+        if _RL_STATE["ok"] >= 15 and _RL_STATE["rpm"] < _RL_STATE["max"]:
+            _RL_STATE["rpm"] = min(_RL_STATE["max"], _RL_STATE["rpm"] + 1)
+            _RL_STATE["ok"] = 0
+
+
+def current_rpm() -> float:
+    return _RL_STATE["rpm"]
 
 
 class FootballAPIError(Exception):
@@ -89,29 +136,25 @@ class FiveDollarFootballAPI:
 
         url = f"{self.base_url}/{path.lstrip('/')}"
 
-        now = time.monotonic()
-        recent = [t for t in self._request_times if now - t < 60]
-        self._request_times.clear()
-        self._request_times.extend(recent)
-        if len(recent) >= 9:
-            time.sleep(max(0.0, 60.0 - (now - recent[0]) + 0.25))
-
-        for attempt in range(3):
-            self._request_times.append(time.monotonic())
+        response = None
+        for attempt in range(5):
+            _acquire_rate_slot()
             response = requests.get(
                 url,
                 headers=self.headers,
                 params=params,
                 timeout=self.timeout,
             )
-            if response.status_code == 429 and attempt < 2:
+            if response.status_code == 429 and attempt < 4:
                 retry_after = response.headers.get("Retry-After")
                 try:
-                    delay = float(retry_after) if retry_after else 10.0
+                    delay = float(retry_after) if retry_after else 5.0
                 except (TypeError, ValueError):
-                    delay = 10.0
-                time.sleep(max(delay, 1.0))
+                    delay = 5.0
+                _rate_limited(delay)
                 continue
+            if response.status_code < 400:
+                _rate_ok()
             break
 
         if response.status_code >= 400:

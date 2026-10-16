@@ -27,17 +27,19 @@ from .models import HistoricalMatch, MatchRecord, Odds
 def _close(a: Optional[float], b: Optional[float], tolerance: float) -> bool:
     if a is None or b is None:
         return False
-    return abs(a - b) <= tolerance
+    # Oranlar 2 ondalıkla gelir; kayan nokta artığı sınırdaki eşleşmeyi
+    # (ör. 3.10 vs 3.15, tolerans 0.05) yanlışlıkla dışarıda bırakmasın.
+    return abs(a - b) <= tolerance + 1e-9
 
 
 def _odds_component_tolerance(
     current_value: Optional[float],
     base_tolerance: float,
 ) -> float:
-    """Oranın büyüklüğüne göre ölçeklenen tolerans."""
-    if current_value is None:
-        return base_tolerance
-    return max(base_tolerance, abs(current_value) * 0.05)
+    """MUTLAK tolerans (oran birimi). Yüzde/ölçekli genişletme yoktur:
+    "birebir ya da çok yakın" eşleşme için her bileşen en fazla
+    ``base_tolerance`` kadar farklı olabilir."""
+    return base_tolerance
 
 
 def _odds_match(current: Odds, historical: Odds, tolerance: float) -> bool:
@@ -52,8 +54,8 @@ def _odds_distance(current: Odds, historical: Odds, tolerance: float) -> float:
     for c, h in zip(current.values(), historical.values()):
         if c is None or h is None:
             return 999.0
-        component_tolerance = _odds_component_tolerance(c, tolerance)
-        values.append(abs(c - h) / max(component_tolerance, 0.0001))
+        # Uzaklık: oran birimi cinsinden ortalama mutlak fark (0 = birebir aynı).
+        values.append(abs(c - h))
     return sum(values) / len(values) if values else 999.0
 
 

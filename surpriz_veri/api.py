@@ -27,6 +27,7 @@ from .similar_match_finder import find_similar_matches
 from .historical_matcher import build_historical_pools
 from .surprise_candidates import generate_candidates
 from .models import HistoricalMatch
+from .history_pool import HistoryPool
 from .result_mapper import map_fixture_result
 
 app = FastAPI(
@@ -83,6 +84,16 @@ def _rows(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     return _client().flatten_fixture_list(payload)
 
 
+_HISTORY_POOL = None
+
+
+def _history_pool() -> HistoryPool:
+    global _HISTORY_POOL
+    if _HISTORY_POOL is None:
+        _HISTORY_POOL = HistoryPool(_client, "NosyAPI" if _DATA_PROVIDER == "nosyapi" else "5DollarFootballAPI")
+    return _HISTORY_POOL
+
+
 def _historical_matches(days: int, current=None) -> List[HistoricalMatch]:
     """Kapsanan liglerdeki gerçek tarihsel maçları uzun dönem tarar.
 
@@ -90,179 +101,12 @@ def _historical_matches(days: int, current=None) -> List[HistoricalMatch]:
     1X2 oran profiline sahip geçmiş maçlar farklı liglerde de bulunabilir.
     API planının tarih ve lig kapsamı sınırları aynen geçerlidir.
     """
-    cached = _HISTORICAL_CACHE.get(days)
-    cached_at = _HISTORICAL_CACHE_AT.get(days, 0.0)
-    if cached is not None and time.time() - cached_at < _HISTORICAL_CACHE_TTL:
-        return cached
-
-    client = _client()
-    now = datetime.now(timezone.utc)
-    day_count = min(max(days, 1), 730)
-    start_dt = now - timedelta(days=day_count)
-    end_dt = now
-    start_ts = int(start_dt.timestamp())
-    end_ts = int(end_dt.timestamp())
-
-    fixtures: List[Dict[str, Any]] = []
-
-    if isinstance(client, NosyAPIClient):
-        # NosyAPI'nin tarihsel sonuç servisi (matches-result) lige göre
-        # değil TARİHE göre sorgulanır ve o günün TÜM liglerini tek
-        # yanıtta döndürür. Önceki tasarım önce leagues() ile lig
-        # listesi çekip sonra HER lig için AYNI günün sonuçlarını tekrar
-        # tekrar istiyordu - hem gereksiz yere yavaş (lig x gün kadar
-        # istek, NosyAPI'nin düşük dakikalık kotasında dakikalarca
-        # sürüyordu) hem de leagues() ayrıştırması herhangi bir nedenle
-        # boş dönerse (ör. yanıt şeması beklenenden farklıysa) tüm
-        # tarihsel havuzun sessizce boş kalmasına yol açıyordu. Lig
-        # eşleşmesi zaten istenmiyor (bkz. yukarıdaki açıklama), bu
-        # yüzden gün bazlı toplu tarama doğrudan kullanılır.
-        try:
-            fixtures = client.historical_results(
-                start_time=start_ts,
-                end_time=end_ts,
-            )
-        except FootballAPIError:
-            fixtures = []
-        logger.info("_historical_matches(): NosyAPI toplu tarama -> %d fixture", len(fixtures))
-    else:
-        # Önce tarih aralığında aktif olan tüm futbol liglerini al.
-        leagues: List[Dict[str, Any]] = []
-        page = 1
-        while page <= 20:
-            try:
-                payload = client.leagues(
-                    active_since=start_ts,
-                    page=page,
-                    per_page=100,
-                )
-            except FootballAPIError:
-                break
-
-            data = payload.get("data", [])
-            if isinstance(data, dict):
-                data = (
-                    data.get("leagues")
-                    or data.get("items")
-                    or data.get("results")
-                    or []
-                )
-            if not isinstance(data, list) or not data:
-                break
-
-            leagues.extend(x for x in data if isinstance(x, dict))
-
-            pagination = payload.get("pagination", {})
-            if not isinstance(pagination, dict) or not pagination.get("has_more"):
-                break
-            page += 1
-
-        # Aynı lig birden fazla sayfadan gelirse tekilleştir.
-        league_ids: List[int] = []
-        seen_leagues = set()
-        for league in leagues:
-            league_id = league.get("id")
-            if league_id is None:
-                continue
-            try:
-                league_id = int(league_id)
-            except (TypeError, ValueError):
-                continue
-            if league_id not in seen_leagues:
-                seen_leagues.add(league_id)
-                league_ids.append(league_id)
-
-        # Analiz isteği içinde bütün ligleri ve sayfaları taramak, 10/dk
-        # API sınırında dakikalarca beklemeye neden oluyordu. Her analizde
-        # sınırlı sayıda toplu sayfa alınır; alınan gerçek kayıtlar 6 saat cache edilir.
-        # Per-fixture odds çağrıları özellikle yapılmaz.
-        scan_budget = 8
-        for league_id in league_ids:
-            if scan_budget <= 0:
-                break
-            try:
-                payload = client.league_fixtures(
-                    league_id=league_id,
-                    start_time=start_ts,
-                    end_time=end_ts,
-                    status="finished",
-                    include="odds,events,stats",
-                    page=1,
-                    per_page=50,
-                    order="desc",
-                )
-            except FootballAPIError:
-                continue
-            scan_budget -= 1
-            fixtures.extend(_rows(payload))
-
-    result: List[HistoricalMatch] = []
-    seen = set()
-    odds_fetch_budget = _HISTORICAL_ODDS_FETCH_CAP
-
-    for fixture in fixtures:
-        fixture_id = fixture.get("id") if isinstance(fixture, dict) else None
-        if fixture_id is None or str(fixture_id) in seen:
-            continue
-        seen.add(str(fixture_id))
-
-        # Liste uç noktasının gömdüğü oran varsa önce onu dene;
-        # yoksa (çoğunlukla olduğu gibi) tek maç oran uç noktasından
-        # gerçek açılış/kapanış değerini ayrıca çek. Oran bulunamayan
-        # bir tarihsel maç, açılış/kapanış havuzlarında hiçbir zaman
-        # eşleşmeyeceğinden havuza eklenmesi anlamsızdır.
-        #
-        # odds_fetch_budget yalnızca GERÇEKTEN ek bir ağ isteği
-        # gerektiğinde tüketilir; zaten gömülü oranı olan maçlar için
-        # bütçe harcanmaz ve döngü erken kesilmez - aksi halde liste
-        # içinde zaten oranlı gelen maçlar bile bütçe tükendiği an
-        # sessizce atlanıyordu.
-        fixture_odds = (
-            fixture.get("odds")
-            if isinstance(fixture.get("odds"), dict)
-            else None
-        )
-
-        if not fixture_odds:
-            if odds_fetch_budget <= 0:
-                continue
-            try:
-                fixture_odds = client.fixture_odds(int(fixture_id))
-            except (FootballAPIError, TypeError, ValueError):
-                fixture_odds = None
-            odds_fetch_budget -= 1
-
-        if not fixture_odds:
-            continue
-
-        try:
-            record = map_fixture_to_match_record(
-                fixture,
-                odds_data=fixture_odds,
-            )
-            if (
-                record.opening_odds.home is None
-                and record.closing_odds.home is None
-            ):
-                # Oran bloğu geldi ama 1X2 çözümlenemedi; bu maç
-                # hiçbir havuzda kullanılamaz, dahil etmenin anlamı yok.
-                continue
-            record = replace(record, outcome=map_fixture_result(fixture))
-            result.append(
-                HistoricalMatch(
-                    record=record,
-                    source="NosyAPI" if isinstance(client, NosyAPIClient) else "5DollarFootballAPI",
-                )
-            )
-        except (ValueError, TypeError):
-            continue
-
-    logger.info(
-        "_historical_matches(days=%s): %d ham fixture -> %d kullanılabilir tarihsel kayıt",
-        days, len(fixtures), len(result),
-    )
-    _HISTORICAL_CACHE[days] = result
-    _HISTORICAL_CACHE_AT[days] = time.time()
+    pool = _history_pool()
+    pool.ensure_started(days)
+    # Havuz henüz boşsa (servis yeni uyandı) yükleyiciye kısa süre tanı.
+    pool.wait_for_minimum(int(os.getenv("SURPRISE_WARMUP_MIN_MATCHES", "1500")), float(os.getenv("SURPRISE_WARMUP_SECONDS", "25")))
+    result = pool.matches()
+    logger.info("_historical_matches(): havuz=%d maç, durum=%s", len(result), pool.status)
     return result
 
 
@@ -410,15 +254,25 @@ def weekly_fixtures(
     try:
         while cursor <= end_time:
             chunk_end = min(cursor + 24 * 60 * 60 - 1, end_time)
-            payload = client.fixtures(
-                start_time=cursor,
-                end_time=chunk_end,
-                status=status,
-                include="odds,events,stats",
-                page=1,
-                per_page=min(per_page, 500),
-            )
-            combined.extend(client.flatten_fixture_list(payload))
+            # TÜM sayfalar çekilir: önceden yalnızca 1. sayfa alındığından
+            # (sağlayıcı sayfa başına ~50-100 maç verir) günün maçlarının çoğu,
+            # Türkiye ligleri dahil, listeye hiç girmiyordu.
+            page = 1
+            while page <= 60:
+                payload = client.fixtures(
+                    start_time=cursor,
+                    end_time=chunk_end,
+                    status=status,
+                    include="odds",
+                    page=page,
+                    per_page=min(per_page, 100),
+                )
+                rows = client.flatten_fixture_list(payload)
+                combined.extend(rows)
+                pagination = payload.get("pagination", {}) if isinstance(payload, dict) else {}
+                if not rows or not (isinstance(pagination, dict) and pagination.get("has_more")):
+                    break
+                page += 1
             cursor = chunk_end + 1
     except FootballAPIError as exc:
         logger.exception("FootballAPIError: %s", exc)
@@ -539,6 +393,7 @@ def analyze(
                 "market_profile": asdict(current.market_profile),
             },
             "historical_matches": len(historical),
+            "history_status": _history_pool().status,
             "pool_sizes": pool_sizes,
             "surprise_candidates": surprise_candidates,
             "surprise_candidates_note": (

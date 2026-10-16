@@ -66,11 +66,11 @@ def is_closing_match(
     tolerance = CONFIG.closing_odds_tolerance
 
     return (
-        abs(current_odds.home - historical_odds.home) <= tolerance
+        abs(current_odds.home - historical_odds.home) <= tolerance + 1e-9
         and
-        abs(current_odds.draw - historical_odds.draw) <= tolerance
+        abs(current_odds.draw - historical_odds.draw) <= tolerance + 1e-9
         and
-        abs(current_odds.away - historical_odds.away) <= tolerance
+        abs(current_odds.away - historical_odds.away) <= tolerance + 1e-9
     )
 
 

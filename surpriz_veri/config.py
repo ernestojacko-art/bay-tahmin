@@ -17,14 +17,17 @@ class SurpriseConfig:
         "https://api.5dollarfootballapi.com/v1",
     )
 
-    # Tarihsel eşleştirmede kullanılacak odds toleransı.
-    # Sabit bir ±0.10 zorlaması yoktur.
+    # Tarihsel eşleştirmede kullanılacak MUTLAK oran toleransı: güncel oranın
+    # 1, X ve 2 bileşenlerinin HER BİRİ, geçmiş maçın aynı bileşeninden en
+    # fazla bu kadar (oran birimi cinsinden) farklı olabilir. Yüzde/oran
+    # bazlı genişletme YOKTUR -- "birebir ya da çok yakın" eşleşme istenir.
+    # (Eski varsayılan 0.15 + %5 genişleme, alakasız maçları da eşleştiriyordu.)
     opening_odds_tolerance: float = float(
-        os.getenv("SURPRISE_OPENING_ODDS_TOLERANCE", "0.15")
+        os.getenv("SURPRISE_OPENING_ODDS_TOLERANCE", "0.05")
     )
 
     closing_odds_tolerance: float = float(
-        os.getenv("SURPRISE_CLOSING_ODDS_TOLERANCE", "0.15")
+        os.getenv("SURPRISE_CLOSING_ODDS_TOLERANCE", "0.05")
     )
 
     movement_tolerance: float = float(
@@ -55,9 +58,13 @@ class SurpriseConfig:
     # Havuzların birbirine karıştırılmasını önleyen açık ayrım.
     use_opening_pool: bool = True
     use_closing_pool: bool = True
-    use_movement_pool: bool = True
-    use_market_profile_pool: bool = True
-    use_kickoff_pool: bool = True
+    # Hareket (yüzde düşüş/yükseliş), market profili ve başlama saati
+    # havuzları varsayılan olarak KAPALI: kullanıcı yalnızca güncel
+    # açılış/kapanış oranlarının geçmiş maçların açılış/kapanış oranlarıyla
+    # birebir örtüşmesini istiyor. Env ile açılabilir.
+    use_movement_pool: bool = os.getenv("SURPRISE_USE_MOVEMENT_POOL", "0") == "1"
+    use_market_profile_pool: bool = os.getenv("SURPRISE_USE_MARKET_PROFILE_POOL", "0") == "1"
+    use_kickoff_pool: bool = os.getenv("SURPRISE_USE_KICKOFF_POOL", "0") == "1"
     use_team_profile: bool = True
 
 

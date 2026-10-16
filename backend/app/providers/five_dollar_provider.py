@@ -18,6 +18,17 @@ from app.providers.models import (
 )
 
 
+# Tüm giden istekler TEK bir kapıdan geçer: istekler arasında en az
+# _MIN_INTERVAL saniye bırakılır ve 429 alınırsa (Retry-After'a uyarak) TÜM
+# istekler ortak bir bekleme süresine girer. Eskiden her istek bağımsız ve
+# anında gidiyordu; Daily Picks onlarca maçı analiz ederken 5DollarFootballAPI
+# 429 döndürüyor, hata sessizce yutuluyor ve kartlar "maç bulunamadı" ile
+# boş dönüyordu.
+_MIN_INTERVAL = float(os.getenv("FIVE_DOLLAR_MIN_INTERVAL_SECONDS", "0.35"))
+_MAX_429_RETRIES = int(os.getenv("FIVE_DOLLAR_MAX_429_RETRIES", "6"))
+_MAX_BACKOFF = float(os.getenv("FIVE_DOLLAR_MAX_BACKOFF_SECONDS", "20"))
+
+
 class FiveDollarFootballProvider(BaseFootballDataProvider):
     """Maps the existing 5DollarFootballAPI v1 into the Cloud Engine models."""
 
@@ -32,6 +43,40 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
         self._inflight: dict[tuple[str, tuple[tuple[str, str], ...]], asyncio.Task] = {}
         self._league_cache: dict[tuple[str, str], list[dict[str, Any]]] = {}
         self._fixture_cache: dict[str, Fixture] = {}
+        # Günlük listede 1X2 piyasası AÇIK görünen maç id'leri (get_fixtures doldurur).
+        self.open_odds_match_ids: set[str] = set()
+        self._throttle_lock = asyncio.Lock()
+        self._next_slot = 0.0
+        self._cooldown_until = 0.0
+        # Uyarlanabilir aralık (AIMD): 429 görülürse aralık ikiye katlanır,
+        # üst üste başarılı isteklerde yavaşça tabana iner. Sağlayıcının gerçek
+        # dakikalık sınırı ne olursa olsun yük kendini ona göre ayarlar.
+        self._interval = _MIN_INTERVAL
+        self._ok_streak = 0
+        self.stats = {"requests": 0, "rate_limited": 0, "rate_limit_failures": 0}
+
+    async def _throttle(self) -> None:
+        async with self._throttle_lock:
+            loop = asyncio.get_running_loop()
+            wait = max(self._next_slot, self._cooldown_until) - loop.time()
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self._next_slot = loop.time() + self._interval
+
+    def _register_rate_limit(self, response: httpx.Response, n: int) -> float:
+        loop = asyncio.get_running_loop()
+        delay = min(_MAX_BACKOFF, 2.0 * (2 ** n))
+        header = response.headers.get("Retry-After")
+        if header:
+            try:
+                delay = min(_MAX_BACKOFF, max(delay if n else 0.0, float(header)))
+            except ValueError:
+                pass
+        self._cooldown_until = max(self._cooldown_until, loop.time() + delay)
+        self._interval = min(7.0, max(self._interval * 2, 1.0))
+        self._ok_streak = 0
+        self.stats["rate_limited"] += 1
+        return delay
 
     def _key_for(self, path: str, params: Optional[dict[str, Any]]) -> tuple[str, tuple[tuple[str, str], ...]]:
         return path, tuple(sorted((str(k), str(v)) for k, v in (params or {}).items()))
@@ -54,20 +99,33 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
 
         async def run() -> Any:
             last: Exception | None = None
+            rate_limit_hits = 0
             try:
-                for attempt in range(retries + 1):
+                attempt = 0
+                while attempt <= retries:
                     try:
-                        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=4.0)) as client:
+                        await self._throttle()
+                        self.stats["requests"] += 1
+                        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
                             r = await client.get(
                                 f"{self._base}/{path.lstrip('/')}",
                                 headers={"Authorization": f"Bearer {self._key}", "Accept": "application/json"},
                                 params=params or {},
                             )
                         if r.status_code == 429:
-                            if cached: return cached[1]
-                            raise ProviderError("5DollarFootballAPI rate limit (429)")
+                            # Eski (süresi dolmuş) veri varsa onu kullan; yoksa
+                            # ortak bekleme süresine girip YENİDEN DENE.
+                            self._register_rate_limit(r, rate_limit_hits)
+                            if cached:
+                                return cached[1]
+                            rate_limit_hits += 1
+                            if rate_limit_hits > _MAX_429_RETRIES:
+                                self.stats["rate_limit_failures"] += 1
+                                raise ProviderError("5DollarFootballAPI rate limit (429)")
+                            continue  # attempt sayacı artmaz: 429 normal hata değildir
                         if r.status_code in {500, 502, 503, 504} and attempt < retries:
-                            await asyncio.sleep(0.5 * (attempt + 1)); continue
+                            attempt += 1
+                            await asyncio.sleep(0.5 * attempt); continue
                         if r.status_code in {401, 403}:
                             raise ProviderError(f"5DollarFootballAPI authentication failed ({r.status_code})")
                         if r.status_code != 200:
@@ -76,13 +134,18 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
                         if isinstance(payload, dict) and payload.get("success") not in (None, 1, True):
                             raise ProviderError(f"5DollarFootballAPI error: {payload}")
                         self._cache[key] = (datetime.now(timezone.utc).timestamp(), payload)
+                        self._ok_streak += 1
+                        if self._ok_streak >= 20 and self._interval > _MIN_INTERVAL:
+                            self._interval = max(_MIN_INTERVAL, self._interval * 0.8)
+                            self._ok_streak = 0
                         return payload
                     except ProviderError:
                         raise
                     except (httpx.HTTPError, ValueError) as exc:
                         last = exc
                         if attempt < retries:
-                            await asyncio.sleep(0.5 * (attempt + 1)); continue
+                            attempt += 1
+                            await asyncio.sleep(0.5 * attempt); continue
                         raise ProviderError(f"5DollarFootballAPI bağlantı/JSON hatası: {exc}") from exc
                 raise ProviderError(f"5DollarFootballAPI request failed: {last}")
             finally:
@@ -127,15 +190,41 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
             status=cls._status(raw.get("status")), round=raw.get("round"),
         )
 
+    @staticmethod
+    def _has_open_1x2(raw: dict[str, Any]) -> bool:
+        odds = raw.get("odds")
+        books = [odds] if isinstance(odds, dict) else [b.get("odds") for b in odds if isinstance(b, dict)] if isinstance(odds, list) else []
+        for book in books:
+            if not isinstance(book, dict):
+                continue
+            entry = book.get("1x2")
+            if not isinstance(entry, dict):
+                continue
+            for stage_name in ("current", "closing", "opening"):
+                stage = entry.get(stage_name)
+                if isinstance(stage, dict) and all(stage.get(k) not in (None, "", 0) for k in ("home", "draw", "away")):
+                    return True
+        return False
+
     async def get_fixtures(self, on_date: date, league_id: Optional[str] = None) -> list[Fixture]:
         tz = ZoneInfo("Europe/Istanbul")
         start = datetime.combine(on_date, datetime.min.time(), tzinfo=tz).astimezone(timezone.utc)
         end = datetime.combine(on_date + timedelta(days=1), datetime.min.time(), tzinfo=tz).astimezone(timezone.utc)
-        rows = await self._all_pages("fixtures", {"start_time": int(start.timestamp()), "end_time": int(end.timestamp()), "status": "all", "lang": "en", "per_page": 100})
-        out=[]
+        base = {"start_time": int(start.timestamp()), "end_time": int(end.timestamp()), "status": "all", "lang": "en", "per_page": 100}
+        try:
+            # include=odds: hangi maçın 1X2 piyasası açık olduğunu tek seferde öğreniriz;
+            # böylece piyasası olmayan maçlara boşuna analiz çağrısı harcanmaz.
+            rows = await self._all_pages("fixtures", {**base, "include": "odds"})
+            with_odds = True
+        except ProviderError:
+            rows = await self._all_pages("fixtures", base)
+            with_odds = False
+        out = []
         for raw in rows:
             if league_id and str((raw.get("league") or {}).get("id")) != str(league_id): continue
-            f=self._fixture(raw); self._fixture_cache[f.match_id]=f; out.append(f)
+            f = self._fixture(raw); self._fixture_cache[f.match_id] = f; out.append(f)
+            if with_odds and self._has_open_1x2(raw):
+                self.open_odds_match_ids.add(f.match_id)
         return out
 
     async def get_fixture(self, match_id: str) -> Optional[Fixture]:
