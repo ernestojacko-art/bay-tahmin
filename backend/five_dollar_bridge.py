@@ -58,8 +58,21 @@ def _cached(cache_key):
     return item
 
 
+_PACE = {"interval": 0.8, "next": 0.0, "lock": None}
+
+
 async def _paced_request(url: str, params: dict):
-    async with httpx.AsyncClient(timeout=httpx.Timeout(8.0, connect=3.0)) as client:
+    # Tüm istekler tek kapıdan, aralıklı gider (sağlayıcı, ardışık sayfa
+    # isteklerinde bile 429 verebiliyor). Aralık 429'da büyür, başarıda küçülür.
+    if _PACE["lock"] is None:
+        _PACE["lock"] = asyncio.Lock()
+    async with _PACE["lock"]:
+        loop = asyncio.get_running_loop()
+        wait = _PACE["next"] - loop.time()
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _PACE["next"] = loop.time() + _PACE["interval"]
+    async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=4.0)) as client:
         return await client.get(url, headers=_headers(), params=params)
 
 
@@ -89,33 +102,44 @@ async def _get(path: str, params: dict | None = None, *, retries: int = 0):
     async def fetch():
         global _RATE_LIMIT_UNTIL
         last_error = None
+        rate_hits = 0
         try:
-            for attempt in range(retries + 1):
+            attempt = 0
+            while attempt <= retries:
                 try:
                     response = await _paced_request(f"{BASE}/{path.lstrip('/')}", params or {})
                 except httpx.HTTPError as exc:
                     last_error = exc
                     if attempt < retries:
+                        attempt += 1
                         await asyncio.sleep(0.5)
                         continue
                     raise HTTPException(status_code=502, detail=f"5DollarFootballAPI bağlantı hatası: {exc}") from exc
 
                 if response.status_code == 429:
-                    retry_after = response.headers.get("Retry-After")
-                    try:
-                        wait = max(1, int(float(retry_after))) if retry_after else 60
-                    except (TypeError, ValueError):
-                        wait = 60
-                    _RATE_LIMIT_UNTIL = max(_RATE_LIMIT_UNTIL, datetime.now(timezone.utc).timestamp() + wait)
                     stale = _cached(cache_key)
                     if stale:
                         return stale[1]
+                    retry_after = response.headers.get("Retry-After")
+                    try:
+                        wait = float(retry_after) if retry_after else 3.0 * (2 ** rate_hits)
+                    except (TypeError, ValueError):
+                        wait = 3.0 * (2 ** rate_hits)
+                    wait = min(max(wait, 1.0), 15.0)
+                    _PACE["interval"] = min(7.0, _PACE["interval"] * 1.6)
+                    rate_hits += 1
+                    if rate_hits <= 4:
+                        await asyncio.sleep(wait)   # bekle ve YENİDEN DENE
+                        continue
+                    _RATE_LIMIT_UNTIL = max(_RATE_LIMIT_UNTIL, datetime.now(timezone.utc).timestamp() + 10)
                     raise HTTPException(
                         status_code=503,
                         detail="Canlı veri sağlayıcısı geçici olarak yoğun. Güvenilir olmayan veya uydurma veri göstermek yerine bu isteği güvenli biçimde durdurdum.",
                     )
+                _PACE["interval"] = max(0.5, _PACE["interval"] * 0.97)
 
                 if response.status_code in {500, 502, 503, 504} and attempt < retries:
+                    attempt += 1
                     await asyncio.sleep(0.5)
                     continue
 
