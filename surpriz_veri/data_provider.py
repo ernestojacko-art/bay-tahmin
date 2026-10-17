@@ -45,7 +45,27 @@ _RL_STATE = {
 }
 
 
-def _acquire_rate_slot() -> None:
+_FG_WAITING = {"n": 0}
+
+
+def _acquire_rate_slot(background: bool = False) -> None:
+    """Kullanıcı isteği (ön plan) her zaman arka plan yükleyicisinin önüne geçer:
+    ön planda bekleyen varken arka plan istekleri slot almaz."""
+    if background:
+        while _FG_WAITING["n"] > 0:
+            time.sleep(0.3)
+    else:
+        with _RL_LOCK:
+            _FG_WAITING["n"] += 1
+    try:
+        _acquire_rate_slot_inner()
+    finally:
+        if not background:
+            with _RL_LOCK:
+                _FG_WAITING["n"] -= 1
+
+
+def _acquire_rate_slot_inner() -> None:
     while True:
         with _RL_LOCK:
             now = time.monotonic()
@@ -138,7 +158,7 @@ class FiveDollarFootballAPI:
 
         response = None
         for attempt in range(5):
-            _acquire_rate_slot()
+            _acquire_rate_slot(getattr(self, "background", False))
             response = requests.get(
                 url,
                 headers=self.headers,

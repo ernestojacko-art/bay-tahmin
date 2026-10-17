@@ -58,22 +58,15 @@ def _cached(cache_key):
     return item
 
 
-_PACE = {"interval": 0.8, "next": 0.0, "lock": None}
-
-
 async def _paced_request(url: str, params: dict):
-    # Tüm istekler tek kapıdan, aralıklı gider (sağlayıcı, ardışık sayfa
-    # isteklerinde bile 429 verebiliyor). Aralık 429'da büyür, başarıda küçülür.
-    if _PACE["lock"] is None:
-        _PACE["lock"] = asyncio.Lock()
-    async with _PACE["lock"]:
-        loop = asyncio.get_running_loop()
-        wait = _PACE["next"] - loop.time()
-        if wait > 0:
-            await asyncio.sleep(wait)
-        _PACE["next"] = loop.time() + _PACE["interval"]
+    # Provider ile AYNI kapıyı paylaşır (app.core.api_gate): toplam hız ~10/dk.
+    from app.core import api_gate
+    await api_gate.acquire()
     async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=4.0)) as client:
-        return await client.get(url, headers=_headers(), params=params)
+        response = await client.get(url, headers=_headers(), params=params)
+    if response.status_code == 200:
+        api_gate.on_ok()
+    return response
 
 
 async def _get(path: str, params: dict | None = None, *, retries: int = 0):
@@ -126,7 +119,8 @@ async def _get(path: str, params: dict | None = None, *, retries: int = 0):
                     except (TypeError, ValueError):
                         wait = 3.0 * (2 ** rate_hits)
                     wait = min(max(wait, 1.0), 15.0)
-                    _PACE["interval"] = min(7.0, _PACE["interval"] * 1.6)
+                    from app.core import api_gate as _gate
+                    _gate.on_rate_limited(wait)
                     rate_hits += 1
                     if rate_hits <= 4:
                         await asyncio.sleep(wait)   # bekle ve YENİDEN DENE
@@ -136,8 +130,6 @@ async def _get(path: str, params: dict | None = None, *, retries: int = 0):
                         status_code=503,
                         detail="Canlı veri sağlayıcısı geçici olarak yoğun. Güvenilir olmayan veya uydurma veri göstermek yerine bu isteği güvenli biçimde durdurdum.",
                     )
-                _PACE["interval"] = max(0.5, _PACE["interval"] * 0.97)
-
                 if response.status_code in {500, 502, 503, 504} and attempt < retries:
                     attempt += 1
                     await asyncio.sleep(0.5)

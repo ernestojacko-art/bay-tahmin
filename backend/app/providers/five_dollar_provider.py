@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from app.core import api_gate
 from app.core.exceptions import ProviderError, ProviderNotConfiguredError
 from app.providers.base import BaseFootballDataProvider
 from app.providers.models import (
@@ -45,6 +46,7 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
         self._fixture_cache: dict[str, Fixture] = {}
         # Günlük listede 1X2 piyasası AÇIK görünen maç id'leri (get_fixtures doldurur).
         self.open_odds_match_ids: set[str] = set()
+        self._odds_cache: dict[str, list[OddsMarket]] = {}
         self._throttle_lock = asyncio.Lock()
         self._next_slot = 0.0
         self._cooldown_until = 0.0
@@ -56,12 +58,7 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
         self.stats = {"requests": 0, "rate_limited": 0, "rate_limit_failures": 0}
 
     async def _throttle(self) -> None:
-        async with self._throttle_lock:
-            loop = asyncio.get_running_loop()
-            wait = max(self._next_slot, self._cooldown_until) - loop.time()
-            if wait > 0:
-                await asyncio.sleep(wait)
-            self._next_slot = loop.time() + self._interval
+        await api_gate.acquire()
 
     def _register_rate_limit(self, response: httpx.Response, n: int) -> float:
         loop = asyncio.get_running_loop()
@@ -72,9 +69,7 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
                 delay = min(_MAX_BACKOFF, max(delay if n else 0.0, float(header)))
             except ValueError:
                 pass
-        self._cooldown_until = max(self._cooldown_until, loop.time() + delay)
-        self._interval = min(7.0, max(self._interval * 2, 1.0))
-        self._ok_streak = 0
+        api_gate.on_rate_limited(delay)
         self.stats["rate_limited"] += 1
         return delay
 
@@ -134,10 +129,7 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
                         if isinstance(payload, dict) and payload.get("success") not in (None, 1, True):
                             raise ProviderError(f"5DollarFootballAPI error: {payload}")
                         self._cache[key] = (datetime.now(timezone.utc).timestamp(), payload)
-                        self._ok_streak += 1
-                        if self._ok_streak >= 20 and self._interval > _MIN_INTERVAL:
-                            self._interval = max(_MIN_INTERVAL, self._interval * 0.8)
-                            self._ok_streak = 0
+                        api_gate.on_ok()
                         return payload
                     except ProviderError:
                         raise
@@ -155,15 +147,17 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
         self._inflight[key] = task
         return await task
 
-    async def _all_pages(self, path: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+    async def _all_pages(self, path: str, params: dict[str, Any], max_pages: int = 100) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
-        for page in range(1, 101):
+        for page in range(1, max_pages + 1):
             payload = await self._request(path, {**params, "page": page})
             page_rows = payload.get("data") or [] if isinstance(payload, dict) else []
             rows.extend(x for x in page_rows if isinstance(x, dict))
             pagination = payload.get("pagination") or {} if isinstance(payload, dict) else {}
             if not pagination.get("has_more"):
                 return rows
+        if max_pages < 100:
+            return rows  # bilinçli sınır: en yeni max_pages sayfa yeterli
         raise ProviderError("5DollarFootballAPI pagination limit exceeded")
 
     @staticmethod
@@ -225,6 +219,12 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
             f = self._fixture(raw); self._fixture_cache[f.match_id] = f; out.append(f)
             if with_odds and self._has_open_1x2(raw):
                 self.open_odds_match_ids.add(f.match_id)
+                try:
+                    markets = self._market_rows({"data": raw})
+                    if markets:
+                        self._odds_cache[f.match_id] = markets  # maç başına ayrı oran çağrısına gerek kalmaz
+                except Exception:
+                    pass
         return out
 
     async def get_fixture(self, match_id: str) -> Optional[Fixture]:
@@ -245,7 +245,9 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
         # fazlasıyla karşılarken yükü belirgin şekilde azaltıyor.
         start=datetime.combine(target-timedelta(days=150),datetime.min.time(),tzinfo=tz).astimezone(timezone.utc)
         end=datetime.combine(target+timedelta(days=1),datetime.min.time(),tzinfo=tz).astimezone(timezone.utc)
-        rows=await self._all_pages(f"leagues/{league_id}/fixtures", {"start_time":int(start.timestamp()),"end_time":int(end.timestamp()),"status":"all","lang":"en","per_page":100})
+        # Yalnızca BİTMİŞ maçlar, en yeniden eskiye, en fazla 3 sayfa (~300 maç): form/güç
+        # hesabı için yeterli; istek sayısı (ve 10/dk sınırında bekleme) belirgin düşer.
+        rows=await self._all_pages(f"leagues/{league_id}/fixtures", {"start_time":int(start.timestamp()),"end_time":int(end.timestamp()),"status":"finished","order":"desc","lang":"en","per_page":100}, max_pages=3)
         self._league_cache[key]=rows; return rows
 
     @staticmethod
@@ -353,6 +355,8 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
         return result
 
     async def get_odds(self, match_id: str) -> list[OddsMarket]:
+        if str(match_id) in self._odds_cache:
+            return self._odds_cache[str(match_id)]
         try: return self._market_rows(await self._request(f"fixtures/{match_id}/odds",{"lang":"en"}))
         except Exception: return []
 

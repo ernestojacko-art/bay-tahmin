@@ -36,7 +36,7 @@ from .result_mapper import map_fixture_result
 
 logger = logging.getLogger("surpriz_veri.history_pool")
 
-MAX_MATCHES = int(os.getenv("SURPRISE_HISTORY_MAX_MATCHES", "30000"))
+MAX_MATCHES = int(os.getenv("SURPRISE_HISTORY_MAX_MATCHES", "20000"))
 MAX_PAGES_PER_LEAGUE = int(os.getenv("SURPRISE_HISTORY_PAGES_PER_LEAGUE", "8"))
 PER_PAGE = 50
 REFRESH_AFTER_SECONDS = int(os.getenv("SURPRISE_HISTORY_REFRESH_HOURS", "12")) * 3600
@@ -167,6 +167,7 @@ class HistoryPool:
     def _run(self, days: int) -> None:
         try:
             client = self._client_factory()
+            client.background = True  # kullanıcı isteklerine yol ver
             now = datetime.now(timezone.utc)
             start_ts = int((now - timedelta(days=min(max(days, 1), 730))).timestamp())
             end_ts = int(now.timestamp())
@@ -223,7 +224,7 @@ class HistoryPool:
         try:
             tmp = f"{PERSIST_PATH}.tmp"
             with open(tmp, "wb") as fh:
-                pickle.dump({"saved_at": time.time(), "matches": self.matches()}, fh)
+                pickle.dump({"saved_at": time.time(), "matches": self.matches(), "complete": self.status["state"] == "complete" or self.size() >= MAX_MATCHES}, fh)
             os.replace(tmp, PERSIST_PATH)
         except Exception as exc:
             logger.warning("tarihsel havuz diske yazılamadı: %s", exc)
@@ -237,6 +238,11 @@ class HistoryPool:
             if time.time() - float(blob.get("saved_at", 0)) > PERSIST_MAX_AGE_SECONDS:
                 return
             self._add(list(blob.get("matches", [])))
+            # Yeterince büyük/tam havuz diskten geldiyse yeniden yükleme: istek hakkını
+            # kullanıcı analizlerine bırak.
+            if blob.get("complete") or self.size() >= MAX_MATCHES * 0.9:
+                self._finished_ts = float(blob.get("saved_at", 0))
+                self.status["state"] = "complete"
             logger.info("tarihsel havuz diskten yüklendi: %d maç", self.size())
         except Exception as exc:
             logger.warning("tarihsel havuz diskten okunamadı: %s", exc)

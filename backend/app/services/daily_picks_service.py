@@ -21,7 +21,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import time
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
@@ -55,7 +54,7 @@ logger = logging.getLogger("bay_tahmin.daily_picks")
 # raised from the original 15 -> 30 as a moderate, "sen seç" default after
 # the plan was confirmed as 5DollarFootballAPI "Pro"; watch Render logs for
 # credit-limit errors and lower this again if they reappear).
-MAX_CANDIDATES = int(os.getenv("DAILY_PICKS_MAX_CANDIDATES", "30"))
+MAX_CANDIDATES = int(os.getenv("DAILY_PICKS_MAX_CANDIDATES", "24"))
 
 # Response-level cache: once a category has been built for a given date,
 # reuse it for a while instead of re-running the full analysis pipeline on
@@ -72,11 +71,14 @@ _picks_response_cache = TTLCache(default_ttl_seconds=_PICKS_CACHE_TTL_SECONDS)
 # kartta da çıkmasın" kuralı tutarlı uygulanabilir.
 _analysis_pool_cache = TTLCache(default_ttl_seconds=_PICKS_CACHE_TTL_SECONDS)
 _PARTIAL_POOL_TTL_SECONDS = 60
-_pool_locks: dict[str, asyncio.Lock] = {}
+_pool_tasks: dict[str, "asyncio.Task"] = {}
+_pool_live: dict[str, "_Pool"] = {}
+# İstek en fazla bu kadar bekler; analiz bitmediyse o ana kadarki sonuçlar +
+# "hazırlanıyor" notu döner, analiz arka planda biter ve sonraki çağrı anında yanıtlanır.
+REQUEST_WAIT_SECONDS = float(os.getenv("DAILY_PICKS_REQUEST_WAIT_SECONDS", "40"))
 # Tek bir istek en fazla bu kadar saniye analiz yapar; süre dolarsa o ana kadar
 # analiz edilenlerle yanıt verilir, kalan maçlar bir sonraki çağrıda (önbellekten
 # hızlıca) devam eder.
-TIME_BUDGET_SECONDS = float(os.getenv("DAILY_PICKS_TIME_BUDGET_SECONDS", "80"))
 
 # Maps a PickCandidate.market display label to the internal prediction_type
 # code `accuracy.py` knows how to resolve against a finished fixture (see
@@ -157,14 +159,10 @@ class DailyPicksService:
         upcoming.sort(key=lambda f: (-per_league[f.league_id], f.league_id, f.kickoff, f.match_id))
         return upcoming[:MAX_CANDIDATES], total
 
-    async def _analyze_all(self, fixtures: list[Fixture], total: int) -> _Pool:
-        pool = _Pool(analyzed=[], total_fixtures=total, selected=len(fixtures))
-        deadline = time.monotonic() + TIME_BUDGET_SECONDS
-        for index, fixture in enumerate(fixtures):
-            if time.monotonic() > deadline:
-                pool.truncated = True
-                logger.warning("daily_picks: zaman bütçesi doldu (%d/%d maç analiz edildi)", index, len(fixtures))
-                break
+    async def _analyze_all(self, fixtures: list[Fixture], pool: _Pool) -> None:
+        """Maçları sırayla analiz eder ve sonuçları paylaşılan `pool`a EKLER; böylece
+        istek süresi dolsa bile arka plan analizi sürer ve ilerleme görülebilir."""
+        for fixture in fixtures:
             try:
                 prediction = await self._service.analyze_match(fixture.match_id)
                 dataset = await self._service.get_dataset(fixture.match_id)
@@ -175,26 +173,46 @@ class DailyPicksService:
                 continue
             pool.analyzed.append(_Analyzed(fixture=fixture, prediction=prediction, dataset=dataset))
         logger.info(
-            "daily_picks: toplam=%d seçilen=%d analiz_edilen=%d başarısız=%d yarım=%s hatalar=%s",
-            pool.total_fixtures, pool.selected, len(pool.analyzed), pool.failed, pool.truncated, dict(pool.errors),
+            "daily_picks: toplam=%d seçilen=%d analiz_edilen=%d başarısız=%d hatalar=%s",
+            pool.total_fixtures, pool.selected, len(pool.analyzed), pool.failed, dict(pool.errors),
         )
-        return pool
+
+    async def _build_pool(self, key: str, target: date) -> None:
+        pool = _Pool(analyzed=[], total_fixtures=0, selected=0, truncated=True)
+        _pool_live[key] = pool
+        try:
+            fixtures, total = await self._future_fixtures(target)
+            pool.total_fixtures, pool.selected = total, len(fixtures)
+            await self._analyze_all(fixtures, pool)
+        except BayTahminError as exc:
+            pool.failed += 1
+            pool.errors[type(exc).__name__] += 1
+            logger.warning("daily_picks: gün listesi alınamadı: %s", exc)
+        finally:
+            pool.truncated = False
+            ttl = _PARTIAL_POOL_TTL_SECONDS if (pool.failed and not pool.analyzed) else _PICKS_CACHE_TTL_SECONDS
+            _analysis_pool_cache.set(key, pool, ttl)
+            _pool_live.pop(key, None)
+            _pool_tasks.pop(key, None)
 
     async def _get_pool(self, target: date) -> _Pool:
         key = target.isoformat()
         cached = _analysis_pool_cache.get(key)
         if cached is not None:
             return cached
-        lock = _pool_locks.setdefault(key, asyncio.Lock())
-        async with lock:
-            cached = _analysis_pool_cache.get(key)  # bekleyen istekler hazır havuzu kullanır
-            if cached is not None:
-                return cached
-            fixtures, total = await self._future_fixtures(target)
-            pool = await self._analyze_all(fixtures, total)
-            ttl = _PARTIAL_POOL_TTL_SECONDS if (pool.truncated or (pool.failed and not pool.analyzed)) else _PICKS_CACHE_TTL_SECONDS
-            _analysis_pool_cache.set(key, pool, ttl)
-            return pool
+        task = _pool_tasks.get(key)
+        if task is None:
+            # Analiz ARKA PLANDA sürer (istek iptal olsa da); istek yalnızca
+            # REQUEST_WAIT_SECONDS bekler ve o ana kadarki sonuçla yanıt verir.
+            task = asyncio.create_task(self._build_pool(key, target))
+            _pool_tasks[key] = task
+        try:
+            await asyncio.wait_for(asyncio.shield(task), REQUEST_WAIT_SECONDS)
+        except asyncio.TimeoutError:
+            live = _pool_live.get(key)
+            if live is not None:
+                return live
+        return _analysis_pool_cache.get(key) or _pool_live.get(key) or _Pool(analyzed=[], total_fixtures=0, selected=0, truncated=True)
 
     async def build(self, category: str, target: date, limit: int = 4) -> DailyPicksResponse:
         if category not in _DISCLAIMERS:
@@ -225,15 +243,20 @@ class DailyPicksService:
                 picks = self._build_iyms_surprise(analyzed, limit, exclude=used)
 
         note = None
-        if not picks:
+        if not picks and not pool.truncated:
             note = self._empty_note(target, pool)
-        elif len(picks) < limit:
+        elif len(picks) < limit and not pool.truncated:
             note = (
                 f"Bu kriterleri karşılayan ve diğer kartlarda kullanılmamış yalnızca {len(picks)} gerçek maç bulundu "
                 f"({len(analyzed)} maç analiz edildi)."
             )
-        if picks and pool.truncated:
-            note = ((note + " ") if note else "") + "Analiz zaman sınırı nedeniyle tüm maçları kapsamadı; birkaç dakika sonra yenilerseniz kapsam genişler."
+        if pool.truncated:
+            progress = f"{len(analyzed)}/{pool.selected or '?'} maç analiz edildi"
+            note = (
+                f"Analiz arka planda sürüyor ({progress}); sağlayıcının hız sınırı nedeniyle birkaç dakika "
+                "sürebilir. Sayfayı yenilediğinizde sonuçlar tamamlanmış olacak."
+                + (f" Şu ana kadarki sonuç gösteriliyor." if picks else "")
+            )
 
         await self._record_for_accuracy(picks)
 
@@ -242,7 +265,7 @@ class DailyPicksService:
             picks=picks, candidates_considered=len(analyzed),
             disclaimer=_DISCLAIMERS[category], note=note,
         )
-        ttl = _PARTIAL_POOL_TTL_SECONDS if (pool.truncated or (pool.failed and not analyzed)) else _PICKS_CACHE_TTL_SECONDS
+        ttl = 8 if pool.truncated else (_PARTIAL_POOL_TTL_SECONDS if (pool.failed and not analyzed) else _PICKS_CACHE_TTL_SECONDS)
         _picks_response_cache.set(cache_key, result, ttl)
         return result
 
