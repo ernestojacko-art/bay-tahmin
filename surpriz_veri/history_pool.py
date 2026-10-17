@@ -31,6 +31,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from .data_mapper import map_fixture_to_match_record
 from .data_provider import FootballAPIError, current_rpm
+from . import history_db
 from .models import HistoricalMatch
 from .result_mapper import map_fixture_result
 
@@ -93,6 +94,8 @@ class HistoryPool:
         }
         self._finished_ts = 0.0
         self._load_from_disk()
+        if history_db.is_configured():
+            threading.Thread(target=self._load_from_db, name="surprise-history-db", daemon=True).start()
 
     # ------------------------------------------------------------------ API
     def matches(self) -> List[HistoricalMatch]:
@@ -201,7 +204,9 @@ class HistoryPool:
                     time.sleep(PAGE_DELAY_SECONDS)
                     self.status["pages_fetched"] = pages
                     rows = client.flatten_fixture_list(payload)
-                    self._add(fixtures_to_matches(rows, self._source))
+                    new_matches = fixtures_to_matches(rows, self._source)
+                    self._add(new_matches)
+                    history_db.save(new_matches)  # kalıcı depo (ayarlıysa)
                     pagination = payload.get("pagination", {}) if isinstance(payload, dict) else {}
                     if rows and isinstance(pagination, dict) and pagination.get("has_more"):
                         still_active.append(league_id)
@@ -225,6 +230,17 @@ class HistoryPool:
             self._loaded_event.set()
 
     # ----------------------------------------------------------- persistence
+    def _load_from_db(self) -> None:
+        try:
+            loaded = history_db.load_all()
+            self._add(loaded)
+            logger.info("tarihsel havuz Supabase'ten yüklendi: %d maç (toplam %d)", len(loaded), self.size())
+            if self.size() >= MAX_MATCHES * 0.9:
+                self._finished_ts = time.time()
+                self.status["state"] = "complete"
+        except Exception as exc:
+            logger.warning("Supabase'ten havuz yüklenemedi: %s", exc)
+
     def _save_to_disk(self) -> None:
         try:
             tmp = f"{PERSIST_PATH}.tmp"
