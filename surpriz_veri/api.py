@@ -4,6 +4,7 @@ from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 import logging
+import threading
 import time
 
 from fastapi import FastAPI, HTTPException, Query
@@ -82,6 +83,64 @@ def _client():
 
 def _rows(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     return _client().flatten_fixture_list(payload)
+
+
+WEEK_BUDGET_SECONDS = float(os.getenv("SURPRISE_WEEK_BUDGET_SECONDS", "25"))
+_WEEK_TTL = 10 * 60
+_WEEK_CACHE: Dict[Any, Dict[str, Any]] = {}
+_WEEK_LOCK = threading.Lock()
+_WEEK_BG: set = set()
+
+
+def _week_fill_day(day, status: str, per_page: int, deadline: Optional[float]) -> None:
+    """Bir günün sayfalarını (kaldığı yerden) çeker; deadline dolunca bırakır."""
+    key = (day, status)
+    with _WEEK_LOCK:
+        entry = _WEEK_CACHE.get(key)
+        if entry is None or (entry["complete"] and time.time() - entry["ts"] > _WEEK_TTL):
+            entry = {"rows": [], "next_page": 1, "complete": False, "ts": time.time()}
+            _WEEK_CACHE[key] = entry
+        if entry["complete"]:
+            return
+    client = _client()
+    while not entry["complete"]:
+        if deadline is not None and time.monotonic() > deadline:
+            return
+        with _WEEK_LOCK:
+            page = entry["next_page"]
+        payload = client.fixtures(
+            start_time=day[0], end_time=day[1], status=status, include="odds",
+            page=page, per_page=min(per_page, 100),
+        )
+        rows = client.flatten_fixture_list(payload)
+        pagination = payload.get("pagination", {}) if isinstance(payload, dict) else {}
+        with _WEEK_LOCK:
+            if entry["next_page"] == page:  # başka bir iş parçacığı aynı sayfayı eklemiş olabilir
+                entry["rows"].extend(rows)
+                entry["next_page"] = page + 1
+                if not rows or not (isinstance(pagination, dict) and pagination.get("has_more")) or page >= 60:
+                    entry["complete"] = True
+                    entry["ts"] = time.time()
+
+
+def _week_start_background(days, status: str, per_page: int) -> None:
+    token = (tuple(days), status)
+    with _WEEK_LOCK:
+        if token in _WEEK_BG:
+            return
+        _WEEK_BG.add(token)
+
+    def work():
+        try:
+            for day in days:
+                _week_fill_day(day, status, per_page, None)
+        except Exception as exc:
+            logger.warning("hafta listesi arka plan doldurma hatası: %s", exc)
+        finally:
+            with _WEEK_LOCK:
+                _WEEK_BG.discard(token)
+
+    threading.Thread(target=work, name="week-fill", daemon=True).start()
 
 
 _HISTORY_POOL = None
@@ -248,42 +307,37 @@ def weekly_fixtures(
     if end_time - start_time > 7 * 24 * 60 * 60:
         raise HTTPException(status_code=400, detail="En fazla 7 günlük aralık istenebilir.")
 
-    client = _client()
-    combined: List[Dict[str, Any]] = []
+    # Hız sınırı (~10 istek/dk) nedeniyle 7 günlük tam liste dakikalar sürer. Bu yüzden:
+    # her gün ayrı önbelleğe alınır, istek en fazla WEEK_BUDGET saniye bekler ve o ana
+    # kadar çekilen maçlarla yanıt verir; kalan sayfalar arka planda tamamlanır.
+    # Yenilediğinizde daha fazla maç görünür (partial=true bu durumu belirtir).
+    day_keys = []
     cursor = start_time
+    while cursor <= end_time:
+        chunk_end = min(cursor + 24 * 60 * 60 - 1, end_time)
+        day_keys.append((cursor, chunk_end))
+        cursor = chunk_end + 1
+
+    deadline = time.monotonic() + WEEK_BUDGET_SECONDS
     try:
-        while cursor <= end_time:
-            chunk_end = min(cursor + 24 * 60 * 60 - 1, end_time)
-            # TÜM sayfalar çekilir: önceden yalnızca 1. sayfa alındığından
-            # (sağlayıcı sayfa başına ~50-100 maç verir) günün maçlarının çoğu,
-            # Türkiye ligleri dahil, listeye hiç girmiyordu.
-            page = 1
-            while page <= 60:
-                payload = client.fixtures(
-                    start_time=cursor,
-                    end_time=chunk_end,
-                    status=status,
-                    include="odds",
-                    page=page,
-                    per_page=min(per_page, 100),
-                )
-                rows = client.flatten_fixture_list(payload)
-                combined.extend(rows)
-                pagination = payload.get("pagination", {}) if isinstance(payload, dict) else {}
-                if not rows or not (isinstance(pagination, dict) and pagination.get("has_more")):
-                    break
-                page += 1
-            cursor = chunk_end + 1
+        for day in day_keys:
+            _week_fill_day(day, status, per_page, deadline)
     except FootballAPIError as exc:
         logger.exception("FootballAPIError: %s", exc)
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        if not any(_WEEK_CACHE.get((d, status), {}).get("rows") for d in day_keys):
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    pending = [d for d in day_keys if not _WEEK_CACHE.get((d, status), {}).get("complete")]
+    if pending:
+        _week_start_background(pending, status, per_page)
 
     unique: Dict[str, Dict[str, Any]] = {}
-    for fixture in combined:
-        fixture_id = fixture.get("id") or fixture.get("fixture_id")
-        if fixture_id is not None:
-            unique[str(fixture_id)] = fixture
-    return {"data": list(unique.values()), "count": len(unique)}
+    for day in day_keys:
+        for fixture in _WEEK_CACHE.get((day, status), {}).get("rows", []):
+            fixture_id = fixture.get("id") or fixture.get("fixture_id")
+            if fixture_id is not None:
+                unique[str(fixture_id)] = fixture
+    return {"data": list(unique.values()), "count": len(unique), "partial": bool(pending)}
 
 
 @app.get("/fixtures/{fixture_id}")
