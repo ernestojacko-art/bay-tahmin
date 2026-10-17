@@ -45,8 +45,17 @@ class AnalysisService:
         raw_dataset_cache.set(cache_key, dataset, self._settings.cache_default_ttl_seconds)
         return dataset
 
-    async def analyze_match(self, match_id: str, force_refresh: bool = False) -> MatchPrediction:
+    async def analyze_match(
+        self, match_id: str, force_refresh: bool = False, include_evidence: bool = True
+    ) -> MatchPrediction:
+        # include_evidence=False: Daily Picks yalnızca istatistiksel tahmini kullanır;
+        # Sürpriz Veri servisine maç başına yapılan (yavaş) çağrı atlanır.
         cache_key = f"prediction:{self._provider.name}:{match_id}"
+        if not include_evidence:
+            cache_key += ":noev"
+            cached_full = match_analysis_cache.get(f"prediction:{self._provider.name}:{match_id}")
+            if cached_full is not None and not force_refresh:
+                return cached_full
         if not force_refresh:
             cached = match_analysis_cache.get(cache_key)
             if cached is not None:
@@ -58,7 +67,7 @@ class AnalysisService:
         # Sürpriz Veri (ayrı, bağımsız tarihsel kanıt motoru) yapılandırılmışsa
         # sonucunu ekler. Yapılandırılmamışsa veya erişilemezse bu adım
         # tamamen sessiz kalır ve ana analiz akışını etkilemez.
-        if historical_evidence_client.is_configured():
+        if include_evidence and historical_evidence_client.is_configured():
             try:
                 prediction.historical_evidence = await historical_evidence_client.fetch_historical_evidence(
                     match_id

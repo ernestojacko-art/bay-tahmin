@@ -54,6 +54,7 @@ logger = logging.getLogger("bay_tahmin.daily_picks")
 # raised from the original 15 -> 30 as a moderate, "sen seç" default after
 # the plan was confirmed as 5DollarFootballAPI "Pro"; watch Render logs for
 # credit-limit errors and lower this again if they reappear).
+MAX_LEAGUES = int(os.getenv("DAILY_PICKS_MAX_LEAGUES", "6"))
 MAX_CANDIDATES = int(os.getenv("DAILY_PICKS_MAX_CANDIDATES", "24"))
 
 # Response-level cache: once a category has been built for a given date,
@@ -139,7 +140,12 @@ class DailyPicksService:
         self._service = analysis_service
 
     async def _future_fixtures(self, target: date) -> tuple[list[Fixture], int]:
-        fixtures = await self._service._provider.get_fixtures(target)
+        provider = self._service._provider
+        try:
+            # Yalnızca başlamamış maçlar: biten maçlar da çekilince liste ~2 kat sayfa tutuyordu.
+            fixtures = await provider.get_fixtures(target, status="scheduled")
+        except TypeError:
+            fixtures = await provider.get_fixtures(target)
         upcoming = select_upcoming(fixtures, target_date=target)
         total = len(upcoming)
 
@@ -156,6 +162,10 @@ class DailyPicksService:
         # maçlar için paylaşıldığından sağlayıcı yükü düşer; kalabalık ligler
         # ayrıca daha zengin istatistik demektir. Sıralama deterministiktir.
         per_league = Counter(f.league_id for f in upcoming)
+        top_leagues = {lid for lid, _ in sorted(per_league.items(), key=lambda kv: (-kv[1], kv[0]))[:MAX_LEAGUES]}
+        # Her ligin geçmişi ayrı API çağrıları demek (dakikada ~10 istek sınırı): en kalabalık
+        # birkaç lige odaklanmak, süreyi dakikalardan saniyelere indirir.
+        upcoming = [f for f in upcoming if f.league_id in top_leagues]
         upcoming.sort(key=lambda f: (-per_league[f.league_id], f.league_id, f.kickoff, f.match_id))
         return upcoming[:MAX_CANDIDATES], total
 
@@ -164,7 +174,7 @@ class DailyPicksService:
         istek süresi dolsa bile arka plan analizi sürer ve ilerleme görülebilir."""
         for fixture in fixtures:
             try:
-                prediction = await self._service.analyze_match(fixture.match_id)
+                prediction = await self._service.analyze_match(fixture.match_id, include_evidence=False)
                 dataset = await self._service.get_dataset(fixture.match_id)
             except BayTahminError as exc:
                 pool.failed += 1

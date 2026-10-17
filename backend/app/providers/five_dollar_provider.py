@@ -200,11 +200,11 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
                     return True
         return False
 
-    async def get_fixtures(self, on_date: date, league_id: Optional[str] = None) -> list[Fixture]:
+    async def get_fixtures(self, on_date: date, league_id: Optional[str] = None, status: str = "all") -> list[Fixture]:
         tz = ZoneInfo("Europe/Istanbul")
         start = datetime.combine(on_date, datetime.min.time(), tzinfo=tz).astimezone(timezone.utc)
         end = datetime.combine(on_date + timedelta(days=1), datetime.min.time(), tzinfo=tz).astimezone(timezone.utc)
-        base = {"start_time": int(start.timestamp()), "end_time": int(end.timestamp()), "status": "all", "lang": "en", "per_page": 100}
+        base = {"start_time": int(start.timestamp()), "end_time": int(end.timestamp()), "status": status, "lang": "en", "per_page": 100}
         try:
             # include=odds: hangi maçın 1X2 piyasası açık olduğunu tek seferde öğreniriz;
             # böylece piyasası olmayan maçlara boşuna analiz çağrısı harcanmaz.
@@ -245,9 +245,9 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
         # fazlasıyla karşılarken yükü belirgin şekilde azaltıyor.
         start=datetime.combine(target-timedelta(days=150),datetime.min.time(),tzinfo=tz).astimezone(timezone.utc)
         end=datetime.combine(target+timedelta(days=1),datetime.min.time(),tzinfo=tz).astimezone(timezone.utc)
-        # Yalnızca BİTMİŞ maçlar, en yeniden eskiye, en fazla 3 sayfa (~300 maç): form/güç
+        # Yalnızca BİTMİŞ maçlar, en yeniden eskiye, en fazla 2 sayfa (~200 maç): form/güç
         # hesabı için yeterli; istek sayısı (ve 10/dk sınırında bekleme) belirgin düşer.
-        rows=await self._all_pages(f"leagues/{league_id}/fixtures", {"start_time":int(start.timestamp()),"end_time":int(end.timestamp()),"status":"finished","order":"desc","lang":"en","per_page":100}, max_pages=3)
+        rows=await self._all_pages(f"leagues/{league_id}/fixtures", {"start_time":int(start.timestamp()),"end_time":int(end.timestamp()),"status":"finished","order":"desc","lang":"en","per_page":100}, max_pages=2)
         self._league_cache[key]=rows; return rows
 
     @staticmethod
