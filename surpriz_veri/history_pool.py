@@ -39,6 +39,10 @@ logger = logging.getLogger("surpriz_veri.history_pool")
 MAX_MATCHES = int(os.getenv("SURPRISE_HISTORY_MAX_MATCHES", "20000"))
 MAX_PAGES_PER_LEAGUE = int(os.getenv("SURPRISE_HISTORY_PAGES_PER_LEAGUE", "8"))
 PER_PAGE = 50
+# Arka plan yükleyici aynı API anahtarını Bay Tahmin ile paylaşır (hesap sınırı ~10 istek/dk,
+# iki servis arasında koordinasyon yok). Her sayfadan sonra bekleyerek kullanıcı
+# isteklerine (maç listesi, kartlar) yer bırakır: ~4-5 istek/dk.
+PAGE_DELAY_SECONDS = float(os.getenv("SURPRISE_HISTORY_PAGE_DELAY_SECONDS", "10"))
 REFRESH_AFTER_SECONDS = int(os.getenv("SURPRISE_HISTORY_REFRESH_HOURS", "12")) * 3600
 PERSIST_PATH = os.getenv("SURPRISE_HISTORY_PATH", "/tmp/surprise_history.pkl")
 PERSIST_MAX_AGE_SECONDS = 48 * 3600
@@ -194,6 +198,7 @@ class HistoryPool:
                         self.status["last_error"] = str(exc)[:200]
                         continue
                     pages += 1
+                    time.sleep(PAGE_DELAY_SECONDS)
                     self.status["pages_fetched"] = pages
                     rows = client.flatten_fixture_list(payload)
                     self._add(fixtures_to_matches(rows, self._source))
