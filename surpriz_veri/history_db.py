@@ -36,7 +36,12 @@ def is_configured() -> bool:
 
 
 def _headers(key: str, extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
-    h = {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    h = {"apikey": key, "Content-Type": "application/json"}
+    # Yeni nesil anahtarlar (sb_secret_... / sb_publishable_...) JWT değildir; Authorization
+    # başlığında gönderilirse Supabase isteği "anon" rolüne düşürür. Yalnızca eski JWT
+    # (service_role) anahtarlarında Bearer başlığı eklenir.
+    if not key.startswith("sb_"):
+        h["Authorization"] = f"Bearer {key}"
     h.update(extra or {})
     return h
 
