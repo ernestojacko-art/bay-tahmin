@@ -42,7 +42,7 @@ PER_PAGE = 50
 # Arka plan yükleyici aynı API anahtarını Bay Tahmin ile paylaşır (hesap sınırı ~10 istek/dk,
 # iki servis arasında koordinasyon yok). Her sayfadan sonra bekleyerek kullanıcı
 # isteklerine (maç listesi, kartlar) yer bırakır: ~4-5 istek/dk.
-PAGE_DELAY_SECONDS = float(os.getenv("SURPRISE_HISTORY_PAGE_DELAY_SECONDS", "10"))
+PAGE_DELAY_SECONDS = float(os.getenv("SURPRISE_HISTORY_PAGE_DELAY_SECONDS", "3"))
 REFRESH_AFTER_SECONDS = int(os.getenv("SURPRISE_HISTORY_REFRESH_HOURS", "12")) * 3600
 PERSIST_PATH = os.getenv("SURPRISE_HISTORY_PATH", "/tmp/surprise_history.pkl")
 PERSIST_MAX_AGE_SECONDS = 48 * 3600

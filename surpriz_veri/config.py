@@ -23,11 +23,11 @@ class SurpriseConfig:
     # bazlı genişletme YOKTUR -- "birebir ya da çok yakın" eşleşme istenir.
     # (Eski varsayılan 0.15 + %5 genişleme, alakasız maçları da eşleştiriyordu.)
     opening_odds_tolerance: float = float(
-        os.getenv("SURPRISE_OPENING_ODDS_TOLERANCE", "0.05")
+        os.getenv("SURPRISE_OPENING_ODDS_TOLERANCE", "0.10")
     )
 
     closing_odds_tolerance: float = float(
-        os.getenv("SURPRISE_CLOSING_ODDS_TOLERANCE", "0.05")
+        os.getenv("SURPRISE_CLOSING_ODDS_TOLERANCE", "0.10")
     )
 
     movement_tolerance: float = float(
