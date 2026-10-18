@@ -46,6 +46,9 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
         self._fixture_cache: dict[str, Fixture] = {}
         # Günlük listede 1X2 piyasası AÇIK görünen maç id'leri (get_fixtures doldurur).
         self.open_odds_match_ids: set[str] = set()
+        # İlk Yarı 1X2 piyasası açık maçlar: API'de ayrı bir İY/MS piyasası yok; bahis
+        # sitelerinde İY/MS genellikle ilk yarı 1X2 piyasası olan (majör) maçlarda açık.
+        self.open_ht_match_ids: set[str] = set()
         self._odds_cache: dict[str, list[OddsMarket]] = {}
         self._throttle_lock = asyncio.Lock()
         self._next_slot = 0.0
@@ -185,13 +188,13 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
         )
 
     @staticmethod
-    def _has_open_1x2(raw: dict[str, Any]) -> bool:
+    def _has_open_1x2(raw: dict[str, Any], key: str = "1x2") -> bool:
         odds = raw.get("odds")
         books = [odds] if isinstance(odds, dict) else [b.get("odds") for b in odds if isinstance(b, dict)] if isinstance(odds, list) else []
         for book in books:
             if not isinstance(book, dict):
                 continue
-            entry = book.get("1x2")
+            entry = book.get(key)
             if not isinstance(entry, dict):
                 continue
             for stage_name in ("current", "closing", "opening"):
@@ -219,6 +222,8 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
             f = self._fixture(raw); self._fixture_cache[f.match_id] = f; out.append(f)
             if with_odds and self._has_open_1x2(raw):
                 self.open_odds_match_ids.add(f.match_id)
+                if self._has_open_1x2(raw, "1x2_half"):
+                    self.open_ht_match_ids.add(f.match_id)
                 try:
                     markets = self._market_rows({"data": raw})
                     if markets:

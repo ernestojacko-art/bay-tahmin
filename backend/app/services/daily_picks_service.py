@@ -56,6 +56,11 @@ logger = logging.getLogger("bay_tahmin.daily_picks")
 # credit-limit errors and lower this again if they reappear).
 MAX_LEAGUES = int(os.getenv("DAILY_PICKS_MAX_LEAGUES", "8"))
 MAX_CANDIDATES = int(os.getenv("DAILY_PICKS_MAX_CANDIDATES", "24"))
+# İlk Yarı 1X2 piyasası açık (iddaa'da İY/MS'nin açık olduğu majör) maçlar için lig sınırı:
+# bu maçlar günde ligi başına 1-2 tane olduğundan daha çok lige yayılmak gerekir.
+MAX_HT_LEAGUES = int(os.getenv("DAILY_PICKS_MAX_HT_LEAGUES", "14"))
+# İY/MS kartında "dönüş" kombinasyonları (1/2, 2/1) için en az model olasılığı.
+IYMS_MIN_SWING_PROBABILITY = float(os.getenv("IYMS_MIN_SWING_PROBABILITY", "0.02"))
 
 # Response-level cache: once a category has been built for a given date,
 # reuse it for a while instead of re-running the full analysis pipeline on
@@ -157,30 +162,35 @@ class DailyPicksService:
             if with_market:
                 upcoming = with_market
 
-        # Aday seçimi: "en erken başlayan N maç" yerine, günün en çok maçı olan
-        # liglerinden başla. Aynı ligin geçmişi bir kez çekilip o ligdeki tüm
-        # maçlar için paylaşıldığından sağlayıcı yükü düşer; kalabalık ligler
-        # ayrıca daha zengin istatistik demektir. Sıralama deterministiktir.
-        per_league = Counter(f.league_id for f in upcoming)
-        top_leagues = {lid for lid, _ in sorted(per_league.items(), key=lambda kv: (-kv[1], kv[0]))[:MAX_LEAGUES]}
-        # Her ligin geçmişi ayrı API çağrıları demek (dakikada ~10 istek sınırı): en kalabalık
-        # birkaç lige odaklanmak, süreyi dakikalardan saniyelere indirir.
-        upcoming = [f for f in upcoming if f.league_id in top_leagues]
-        # Dönüşümlü (round-robin) seçim: önceki sıralama en kalabalık ligin maçlarıyla
-        # tüm adayları dolduruyor ve kartlar tek ligden çıkıyordu. Şimdi her ligden
-        # sırayla birer maç alınır (ligler kalabalıktan az kalabalığa, ligin içinde
-        # başlama saatine göre), böylece adaylar birçok ligi kapsar.
-        ordered_leagues = sorted(top_leagues, key=lambda lid: (-per_league[lid], lid))
+        # Aday seçimi: İlk Yarı 1X2 piyasası açık maçlar (iddaa'da İY/MS'nin açık olduğu
+        # majör ligler) ÖNCELİKLİ. Kalan kontenjan, günün en kalabalık liglerinden doldurulur.
+        # Her aşamada ligler arasında dönüşümlü (round-robin) seçilir ki adaylar tek lige
+        # yığılmasın. Sıralama deterministiktir.
+        open_ht = getattr(self._service._provider, "open_ht_match_ids", None) or set()
+        ht_fixtures = [f for f in upcoming if f.match_id in open_ht]
+        rest = [f for f in upcoming if f.match_id not in open_ht]
+
+        picked = self._round_robin(ht_fixtures, MAX_HT_LEAGUES, MAX_CANDIDATES)
+        if len(picked) < MAX_CANDIDATES:
+            picked += self._round_robin(rest, MAX_LEAGUES, MAX_CANDIDATES - len(picked))
+        return picked, total
+
+    @staticmethod
+    def _round_robin(fixtures: list[Fixture], max_leagues: int, limit: int) -> list[Fixture]:
+        if not fixtures or limit <= 0:
+            return []
+        per_league = Counter(f.league_id for f in fixtures)
+        leagues = [lid for lid, _ in sorted(per_league.items(), key=lambda kv: (-kv[1], kv[0]))[:max_leagues]]
         queues = {
-            lid: sorted((f for f in upcoming if f.league_id == lid), key=lambda f: (f.kickoff, f.match_id))
-            for lid in ordered_leagues
+            lid: sorted((f for f in fixtures if f.league_id == lid), key=lambda f: (f.kickoff, f.match_id))
+            for lid in leagues
         }
         picked: list[Fixture] = []
-        while len(picked) < MAX_CANDIDATES and any(queues.values()):
-            for lid in ordered_leagues:
-                if queues[lid] and len(picked) < MAX_CANDIDATES:
+        while len(picked) < limit and any(queues.values()):
+            for lid in leagues:
+                if queues[lid] and len(picked) < limit:
                     picked.append(queues[lid].pop(0))
-        return picked, total
+        return picked
 
     async def _analyze_all(self, fixtures: list[Fixture], pool: _Pool) -> None:
         """Maçları sırayla analiz eder ve sonuçları paylaşılan `pool`a EKLER; böylece
@@ -362,14 +372,29 @@ class DailyPicksService:
         return chosen
 
     @staticmethod
+    def _has_ht_market(item: _Analyzed) -> bool:
+        return any("ilk yarı maç sonucu" in (m.market_name or "").lower().replace("i̇", "i")
+                   for m in item.dataset.odds_markets)
+
+    @staticmethod
     def _build_iyms_surprise(analyzed: list[_Analyzed], limit: int, exclude: set[str] | None = None) -> list[PickCandidate]:
+        exclude = exclude or set()
+        # İY/MS yalnızca ilk yarı 1X2 piyasası açık (bahis sitelerinde İY/MS'nin de açık olduğu)
+        # maçlar için önerilir. Sağlayıcı bu bilgiyi hiçbir maç için vermiyorsa (veri yok),
+        # tüm analiz edilenler değerlendirilir.
+        with_ht = [i for i in analyzed if DailyPicksService._has_ht_market(i)]
+        eligible = with_ht if with_ht else analyzed
+
         pool = [
             (surprise.confidence, item, surprise)
-            for item in analyzed
-            if item.fixture.match_id not in (exclude or set())
+            for item in eligible
+            if item.fixture.match_id not in exclude
             for surprise in item.prediction.surprises
         ]
         pool.sort(key=lambda row: row[0], reverse=True)
+
+        def joint_probability(item: _Analyzed, combo: str) -> float:
+            return float(item.prediction.half_time_full_time.matrix.get(combo, 0.0))
 
         def to_pick(item: _Analyzed, surprise) -> PickCandidate:
             fixture, prediction = item.fixture, item.prediction
@@ -377,7 +402,9 @@ class DailyPicksService:
                 match_id=fixture.match_id, home_team=prediction.home_team.team_name,
                 away_team=prediction.away_team.team_name, league_name=fixture.league_name,
                 kickoff=fixture.kickoff, market="İlk Yarı/Maç Sonucu (İY/MS)", selection=surprise.combination,
-                model_probability=surprise.plausibility, market_probability=None, divergence=None,
+                # GERÇEK model olasılığı (bileşik İY/MS hücresi); "plausibility" ölçekli bir skordur.
+                model_probability=joint_probability(item, surprise.combination),
+                market_probability=None, divergence=None,
                 confidence=surprise.confidence, risk=surprise.risk, data_quality=prediction.data_quality,
                 rationale=surprise.description,
             )
@@ -386,8 +413,25 @@ class DailyPicksService:
         seen_matches: set[str] = set()
         seen_combos: set[str] = set()
 
+        # Pass 0: "dönüş" kombinasyonları (1/2 ve 2/1) olasılıkları küçük olduğu için
+        # skor sıralamasında hep sona düşüyordu ve hiç önerilmiyordu. Her biri için, modelin
+        # en yüksek GERÇEK olasılık verdiği maç (eşik üstündeyse) bir slot alır.
+        if limit >= 3:
+            for combo in ("2/1", "1/2"):
+                best = None
+                for _score, item, surprise in pool:
+                    if surprise.combination != combo or item.fixture.match_id in seen_matches:
+                        continue
+                    prob = joint_probability(item, combo)
+                    if prob >= IYMS_MIN_SWING_PROBABILITY and (best is None or prob > best[0]):
+                        best = (prob, item, surprise)
+                if best is not None:
+                    chosen.append(to_pick(best[1], best[2]))
+                    seen_matches.add(best[1].fixture.match_id)
+                    seen_combos.add(combo)
+
         # Pass 1: prefer both a new match AND a new İY/MS combination, so
-        # the 4 picks are genuinely varied rather than "X/1 four times over".
+        # the picks are genuinely varied rather than "X/1 four times over".
         for _score, item, surprise in pool:
             if len(chosen) >= limit:
                 break
