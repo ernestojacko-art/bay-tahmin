@@ -311,140 +311,62 @@ class ChatOrchestrator:
         self._llm_client = llm_client
         self._context_store = context_store
 
-    async def _reliable_matches(self, message: str, exclude_match_ids: frozenset[str] = frozenset()) -> tuple[str, list[str]]:
-        """§5 PREDICTION / TEST 10: 'en güvendiğin tahmin' -- sürpriz değil,
-        modelin en yüksek GÜVENLE (confidence) durduğu gerçek maçları sıralar."""
+    async def _fast_picks(self, category: str, message: str, exclude_match_ids: frozenset[str]):
+        """Kartlarla AYNI ortak/önbellekli havuzdan sonuç alır (eski yol maçları tek tek
+        tam analizle dolaşıp 10+ dakika sürüyordu). Dönen: (picks, response)."""
+        from app.services.daily_picks_service import DailyPicksService
+
         target = _target_date_from_message(message)
-        evening = _is_evening_request(message)
-        european_only = _wants_european_leagues(message)
+        limit = min(5 + len(exclude_match_ids), 15)
+        response = await DailyPicksService(self._analysis_service).build(category, target, limit=limit)
+        picks = [p for p in response.picks if p.match_id not in exclude_match_ids]
+        if _is_evening_request(message):
+            picks = [p for p in picks if 17 <= p.kickoff.astimezone(ISTANBUL).hour <= 23]
+        if _wants_european_leagues(message):
+            picks = [p for p in picks if _is_top_european_league(p)]
+        return target, picks[:5], response
 
-        provider = self._analysis_service._provider
-        fixtures = await provider.get_fixtures(target)
-        fixtures = _future_scheduled_fixtures(fixtures)
-        if evening:
-            fixtures = _within_evening_window(fixtures, target)
-        if european_only:
-            fixtures = [f for f in fixtures if _is_top_european_league(f)]
-        if exclude_match_ids:
-            fixtures = [f for f in fixtures if f.match_id not in exclude_match_ids]
-        fixtures = fixtures[:40]  # bkz. _daily_surprises: rate-limit koruması
-
-        ranked = []
-        for fixture in fixtures:
-            try:
-                prediction = await self._analysis_service.analyze_match(fixture.match_id)
-            except BayTahminError:
-                continue
-            if not prediction.market_comparison.market_available:
-                continue  # piyasası açık olmayan maç banko olarak sunulamaz
-            ranked.append((prediction.confidence.confidence, fixture, prediction))
-
-        ranked.sort(key=lambda item: item[0], reverse=True)
-        ranked = ranked[:5]
-        if not ranked:
-            return (
-                f"{target.isoformat()} için piyasası açık ve yeterli veri kalitesine sahip "
-                "gerçek bir maç bulamadım.",
-                [],
-            )
-
-        league_label = " üst düzey Avrupa liglerinden" if european_only else ""
-        lines = [f"{target.isoformat()} için{league_label} en güvenilir gerçek maçlar:"]
-        for index, (conf, fixture, prediction) in enumerate(ranked, 1):
-            kickoff_local = fixture.kickoff.astimezone(ISTANBUL).strftime("%H:%M")
-            fav = _favorite_label(prediction)
+    async def _reliable_matches(self, message: str, exclude_match_ids: frozenset[str] = frozenset()) -> tuple[str, list[str]]:
+        """'En güvendiğin tahmin': İdeal kartıyla aynı hızlı havuz (gerçek model güveni)."""
+        target, picks, response = await self._fast_picks("ideal", message, exclude_match_ids)
+        if not picks:
+            return (response.note or f"{target.isoformat()} için piyasası açık ve yeterli veri kalitesine sahip gerçek bir maç bulamadım."), []
+        lines = [f"{target.isoformat()} için en güvenilir gerçek maçlar:"]
+        for index, p in enumerate(picks, 1):
+            kickoff_local = p.kickoff.astimezone(ISTANBUL).strftime("%H:%M")
+            league = f" - {p.league_name}" if p.league_name else ""
             lines.append(
-                f"{index}. {fixture.home_team.name} - {fixture.away_team.name} ({kickoff_local})\n"
-                f"   Model favorisi: {fav} | Güven: %{conf*100:.1f} | Risk: {_risk_tr(prediction.confidence.risk)} | "
-                f"Veri kalitesi: {_quality_tr(prediction.data_quality)}"
+                f"{index}. {p.home_team} - {p.away_team} ({kickoff_local}{league})\n"
+                f"   {p.market}: {p.selection} | Model: %{p.model_probability*100:.1f} | Güven: %{p.confidence*100:.1f} | "
+                f"Risk: {_risk_tr(p.risk)} | Veri kalitesi: {_quality_tr(p.data_quality)}"
             )
-        lines.append("")
-        lines.append(
-            "Bu sıralama, piyasası açık gerçek maçların Cloud Intelligence Engine tarafından "
-            "analiz edilip güven düzeyine göre sıralanmasıyla oluşturuldu. 'Banko' değil, "
-            "modelin göreceli güven sıralamasıdır -- garanti bir sonuç anlamına gelmez."
-        )
-        shown_ids = [fixture.match_id for (_, fixture, _) in ranked]
-        return "\n".join(lines), shown_ids
+        if response.note:
+            lines += ["", response.note]
+        lines += ["", "Bu sıralama gerçek maçların Cloud Intelligence Engine ile analiz edilip güven düzeyine göre "
+                  "sıralanmasıyla oluşturuldu; garanti bir sonuç değildir."]
+        return "\n".join(lines), [p.match_id for p in picks]
 
     async def _daily_surprises(self, message: str, exclude_match_ids: frozenset[str] = frozenset()) -> tuple[str, list[str]]:
-        target = _target_date_from_message(message)
-        evening = _is_evening_request(message)
-        european_only = _wants_european_leagues(message)
-
-        provider = self._analysis_service._provider
-        fixtures = await provider.get_fixtures(target)
-        fixtures = _future_scheduled_fixtures(fixtures)
-        if evening:
-            fixtures = _within_evening_window(fixtures, target)
-        if european_only:
-            fixtures = [f for f in fixtures if _is_top_european_league(f)]
-        already_shown = [f for f in fixtures if f.match_id in exclude_match_ids]
+        """Sürpriz İY/MS: İY/MS kartıyla aynı hızlı havuz (yavaş sıralı analiz kaldırıldı)."""
+        target, picks, response = await self._fast_picks("iyms_surprise", message, exclude_match_ids)
+        if not picks:
+            return (response.note or f"{target.isoformat()} için yeterli veri kalitesine sahip gerçek bir sürpriz İY/MS adayı bulamadım."), []
+        lines = [f"{target.isoformat()} için sürpriz potansiyeli en yüksek İY/MS maçlar:"]
         if exclude_match_ids:
-            fixtures = [f for f in fixtures if f.match_id not in exclude_match_ids]
-
-        # Her aday maç, iki takımın da yıllık lig geçmişini çekmeyi gerektiriyor
-        # (form/H2H için). Filtrelenmemiş bir günde onlarca farklı ligden yüzlerce
-        # maç olabilir -- hepsini sırayla analiz etmeye çalışmak 5DollarFootballAPI'yi
-        # rate-limit'e (429) sokuyor ve rastgele/eksik sonuçlara yol açıyor. Adayları
-        # makul bir üst sınırla kısıtlıyoruz.
-        MAX_CANDIDATES = 40
-        fixtures = fixtures[:MAX_CANDIDATES]
-
-        ranked = []
-        for fixture in fixtures:
-            try:
-                prediction = await self._analysis_service.analyze_match(fixture.match_id)
-            except BayTahminError:
-                continue
-            if not prediction.surprises:
-                continue
-            best = max(prediction.surprises, key=lambda item: item.composite_score)
-            ranked.append((best.composite_score, fixture, prediction, best))
-
-        ranked.sort(key=lambda item: item[0], reverse=True)
-        ranked = ranked[:5]
-        if not ranked:
-            window_note = " (17:00-23:59 aralığında)" if evening else ""
-            league_note = ", sadece üst düzey Avrupa liglerinde" if european_only else ""
-            already_note = (
-                f" Daha önce gösterdiğim {len(already_shown)} maç dışında,"
-                if exclude_match_ids and already_shown else ""
-            )
-            return (
-                f"{target.isoformat()}{window_note}{league_note} için,{already_note} piyasası açık ve yeterli "
-                "veri kalitesine sahip başka bir gerçek sürpriz İY/MS adayı bulamadım. Elimdeki tüm kaliteli "
-                "adayları zaten paylaştım."
-                if exclude_match_ids else
-                f"{target.isoformat()}{window_note}{league_note} için, piyasası açık ve yeterli veri kalitesine sahip "
-                "gerçek bir sürpriz İY/MS adayı bulamadım. Bu, o saatlerdeki maçların çoğunda bahis "
-                "piyasasının henüz açılmamış olmasından ya da veri örnekleminin yetersiz kalmasından "
-                "kaynaklanabilir."
-            ), []
-
-        league_label = " üst düzey Avrupa liglerinden" if european_only else ""
-        header_prefix = "Daha önce gösterdiklerim dışında, " if exclude_match_ids else ""
-        lines = [f"{header_prefix}{target.isoformat()} için{league_label} sürpriz potansiyeli en yüksek İY/MS maçlar:"]
-        if len(ranked) < 5:
-            lines[0] = (
-                f"{header_prefix}{target.isoformat()} için{league_label}, piyasası açık ve yeterli veri kalitesine "
-                f"sahip yalnızca {len(ranked)} güçlü sürpriz adayı bulundu:"
-            )
-        for index, (_, fixture, prediction, best) in enumerate(ranked, 1):
-            kickoff_local = fixture.kickoff.astimezone(ISTANBUL).strftime("%H:%M")
+            lines[0] = "Daha önce gösterdiklerim dışında, " + lines[0]
+        for index, p in enumerate(picks, 1):
+            kickoff_local = p.kickoff.astimezone(ISTANBUL).strftime("%H:%M")
+            league = f" - {p.league_name}" if p.league_name else ""
             lines.append(
-                f"{index}. {fixture.home_team.name} - {fixture.away_team.name} ({kickoff_local})\n"
-                f"   İY/MS: {best.combination} | Sürpriz skoru: {best.composite_score:.2f} | "
-                f"Risk: {_risk_tr(best.risk)} | Güven: %{best.confidence*100:.1f}"
+                f"{index}. {p.home_team} - {p.away_team} ({kickoff_local}{league})\n"
+                f"   İY/MS: {p.selection} | Model: %{p.model_probability*100:.1f} | "
+                f"Risk: {_risk_tr(p.risk)} | Güven: %{p.confidence*100:.1f}"
             )
-        lines.append("")
-        lines.append(
-            "[TANI-v3] Bu liste yalnızca 5DollarFootballAPI üzerinden bulunan, henüz başlamamış ve piyasası "
-            "açık gerçek maçların Cloud Intelligence Engine tarafından analiz edilip gerçek piyasa "
-            "olasılıklarıyla karşılaştırılmasıyla oluşturuldu."
-        )
-        shown_ids = [fixture.match_id for (_, fixture, _, _) in ranked]
-        return "\n".join(lines), shown_ids
+        if response.note:
+            lines += ["", response.note]
+        lines += ["", "[TANI-v3] Bu liste yalnızca gerçek, henüz başlamamış ve piyasası açık maçların analiz edilip "
+                  "gerçek piyasa olasılıklarıyla karşılaştırılmasıyla oluşturuldu."]
+        return "\n".join(lines), [p.match_id for p in picks]
 
     async def _list_matches(self, message: str) -> str:
         """§5 TODAY_MATCHES/EVENING_MATCHES: sürpriz analizi gerektirmeyen düz fikstür listesi.
