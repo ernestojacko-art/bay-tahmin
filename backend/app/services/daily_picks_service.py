@@ -28,6 +28,7 @@ from zoneinfo import ZoneInfo
 
 from app.cache.cache import TTLCache
 from app.core.exceptions import BayTahminError
+from app.core.major_leagues import is_major_league
 from app.intelligence import multi_market_engine as mme
 from app.providers.models import Fixture, MatchRawDataset
 from app.schemas.picks import DailyPicksResponse, PickCandidate
@@ -166,13 +167,19 @@ class DailyPicksService:
         # majör ligler) ÖNCELİKLİ. Kalan kontenjan, günün en kalabalık liglerinden doldurulur.
         # Her aşamada ligler arasında dönüşümlü (round-robin) seçilir ki adaylar tek lige
         # yığılmasın. Sıralama deterministiktir.
+        # Majör ligler (bahis sitelerinde İY/MS ve tüm piyasaların açık olduğu ligler) her zaman
+        # öncelikli: önce majör liglerin maçları ligler arasında dönüşümlü seçilir, kalan kontenjan
+        # ilk yarı piyasası açık, sonra diğer maçlarla doldurulur.
         open_ht = getattr(self._service._provider, "open_ht_match_ids", None) or set()
-        ht_fixtures = [f for f in upcoming if f.match_id in open_ht]
-        rest = [f for f in upcoming if f.match_id not in open_ht]
+        major = [f for f in upcoming if is_major_league(f.league_name)]
+        others = [f for f in upcoming if not is_major_league(f.league_name)]
+        ht_others = [f for f in others if f.match_id in open_ht]
+        rest = [f for f in others if f.match_id not in open_ht]
 
-        picked = self._round_robin(ht_fixtures, MAX_HT_LEAGUES, MAX_CANDIDATES)
-        if len(picked) < MAX_CANDIDATES:
-            picked += self._round_robin(rest, MAX_LEAGUES, MAX_CANDIDATES - len(picked))
+        picked = self._round_robin(major, MAX_HT_LEAGUES, MAX_CANDIDATES)
+        for group, cap in ((ht_others, MAX_LEAGUES), (rest, MAX_LEAGUES)):
+            if len(picked) < MAX_CANDIDATES:
+                picked += self._round_robin(group, cap, MAX_CANDIDATES - len(picked))
         return picked, total
 
     @staticmethod
@@ -276,11 +283,18 @@ class DailyPicksService:
                 picks = self._build_iyms_surprise(analyzed, limit, exclude=used)
 
         note = None
-        if not picks and not pool.truncated:
+        if not picks and not pool.truncated and category == "iyms_surprise" and analyzed:
+            majors = sum(1 for i in analyzed if is_major_league(i.fixture.league_name))
+            note = (
+                f"{target.isoformat()} için analiz edilen {len(analyzed)} maçın {majors} tanesi majör ligden; "
+                "İY/MS yalnızca majör liglerde önerildiği için bu kriteri sağlayan gerçek bir maç bulunamadı. "
+                "Uydurma tahmin üretilmedi."
+            )
+        elif not picks and not pool.truncated:
             note = self._empty_note(target, pool)
         elif len(picks) < limit and not pool.truncated:
             note = (
-                f"Bu kriterleri karşılayan ve diğer kartlarda kullanılmamış yalnızca {len(picks)} gerçek maç bulundu "
+                f"Bu kriterleri karşılayan (İY/MS için majör ligler) ve diğer kartlarda kullanılmamış yalnızca {len(picks)} gerçek maç bulundu "
                 f"({len(analyzed)} maç analiz edildi)."
             )
         if pool.truncated:
@@ -379,11 +393,9 @@ class DailyPicksService:
     @staticmethod
     def _build_iyms_surprise(analyzed: list[_Analyzed], limit: int, exclude: set[str] | None = None) -> list[PickCandidate]:
         exclude = exclude or set()
-        # İY/MS yalnızca ilk yarı 1X2 piyasası açık (bahis sitelerinde İY/MS'nin de açık olduğu)
-        # maçlar için önerilir. Sağlayıcı bu bilgiyi hiçbir maç için vermiyorsa (veri yok),
-        # tüm analiz edilenler değerlendirilir.
-        with_ht = [i for i in analyzed if DailyPicksService._has_ht_market(i)]
-        eligible = with_ht if with_ht else analyzed
+        # İY/MS yalnızca MAJÖR liglerden önerilir (bahis sitelerinde İY/MS'nin açık olduğu ligler);
+        # alt lig / bilinmeyen lig maçları ilk yarı piyasası görünse bile önerilmez.
+        eligible = [i for i in analyzed if is_major_league(i.fixture.league_name)]
 
         pool = [
             (surprise.confidence, item, surprise)

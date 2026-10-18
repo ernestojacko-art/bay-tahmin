@@ -10,6 +10,7 @@ from app.chat.football_expert import FootballExpertAgent
 from app.chat.llm_client import LLMClient
 from app.core.config import Settings
 from app.core.exceptions import BayTahminError, MatchNotFoundError
+from app.core.major_leagues import is_major_league
 from app.providers.models import Fixture, FixtureStatus
 from app.schemas.chat import ChatResponse
 from app.schemas.prediction import MatchPrediction
@@ -133,7 +134,7 @@ _NON_EUROPEAN_COUNTRY_HINTS = (
 )
 _AMBIGUOUS_HINTS = ("premier league", "serie a", "champions league", "super league")
 
-_EUROPEAN_LEAGUE_REQUEST_PATTERN = re.compile(r"avrupa|üst lig|büyük lig|top lig", re.IGNORECASE)
+_EUROPEAN_LEAGUE_REQUEST_PATTERN = re.compile(r"avrupa|üst lig|büyük lig|top lig|m[aı]?j[oö]r|major|önemli lig|ünlü lig|kaliteli lig", re.IGNORECASE)
 
 _SURPRISE_CONTINUATION_PATTERN = re.compile(
     r"hangi maç|hangileri|hangi karşılaş|başka|farklı|diğer|değiştir|filtrele|"
@@ -155,6 +156,22 @@ def _is_top_european_league(fixture: Fixture) -> bool:
     # kabul edilir -- ama bu %100 garantili değildir (API'de ülke adı hiç
     # geçmiyor olabilir), bu yüzden hâlâ bir sınırlama olarak kalır.
     return any(hint in name for hint in _AMBIGUOUS_HINTS)
+
+
+_COUNT_WORDS = {"bir": 1, "iki": 2, "üç": 3, "uc": 3, "dört": 4, "dort": 4, "beş": 5, "bes": 5,
+                "altı": 6, "alti": 6, "yedi": 7, "sekiz": 8, "dokuz": 9, "on": 10}
+
+
+def _requested_count(message: str, default: int = 5) -> int:
+    """'6 maç', 'altı maç öner' gibi ifadelerden istenen maç sayısı (1-10)."""
+    lowered = message.lower()
+    m = re.search(r"(\d+)\s*(?:tane\s*)?(?:maç|mac|adet)", lowered)
+    if m:
+        return max(1, min(int(m.group(1)), 10))
+    m = re.search(r"\b(" + "|".join(_COUNT_WORDS) + r")\s*(?:tane\s*)?(?:maç|mac|adet)", lowered)
+    if m:
+        return _COUNT_WORDS[m.group(1)]
+    return default
 
 
 def _wants_european_leagues(message: str) -> bool:
@@ -317,14 +334,16 @@ class ChatOrchestrator:
         from app.services.daily_picks_service import DailyPicksService
 
         target = _target_date_from_message(message)
-        limit = min(5 + len(exclude_match_ids), 15)
+        count = _requested_count(message)
+        limit = min(count + len(exclude_match_ids), 20)
         response = await DailyPicksService(self._analysis_service).build(category, target, limit=limit)
         picks = [p for p in response.picks if p.match_id not in exclude_match_ids]
         if _is_evening_request(message):
             picks = [p for p in picks if 17 <= p.kickoff.astimezone(ISTANBUL).hour <= 23]
         if _wants_european_leagues(message):
-            picks = [p for p in picks if _is_top_european_league(p)]
-        return target, picks[:5], response
+            # "majör / büyük lig / Avrupa" isteği: yalnızca majör liglerden.
+            picks = [p for p in picks if is_major_league(p.league_name) or _is_top_european_league(p)]
+        return target, picks[:count], response
 
     async def _reliable_matches(self, message: str, exclude_match_ids: frozenset[str] = frozenset()) -> tuple[str, list[str]]:
         """'En güvendiğin tahmin': İdeal kartıyla aynı hızlı havuz (gerçek model güveni)."""
