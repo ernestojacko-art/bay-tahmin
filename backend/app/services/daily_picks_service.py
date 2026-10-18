@@ -54,7 +54,7 @@ logger = logging.getLogger("bay_tahmin.daily_picks")
 # raised from the original 15 -> 30 as a moderate, "sen seç" default after
 # the plan was confirmed as 5DollarFootballAPI "Pro"; watch Render logs for
 # credit-limit errors and lower this again if they reappear).
-MAX_LEAGUES = int(os.getenv("DAILY_PICKS_MAX_LEAGUES", "6"))
+MAX_LEAGUES = int(os.getenv("DAILY_PICKS_MAX_LEAGUES", "8"))
 MAX_CANDIDATES = int(os.getenv("DAILY_PICKS_MAX_CANDIDATES", "24"))
 
 # Response-level cache: once a category has been built for a given date,
@@ -166,8 +166,21 @@ class DailyPicksService:
         # Her ligin geçmişi ayrı API çağrıları demek (dakikada ~10 istek sınırı): en kalabalık
         # birkaç lige odaklanmak, süreyi dakikalardan saniyelere indirir.
         upcoming = [f for f in upcoming if f.league_id in top_leagues]
-        upcoming.sort(key=lambda f: (-per_league[f.league_id], f.league_id, f.kickoff, f.match_id))
-        return upcoming[:MAX_CANDIDATES], total
+        # Dönüşümlü (round-robin) seçim: önceki sıralama en kalabalık ligin maçlarıyla
+        # tüm adayları dolduruyor ve kartlar tek ligden çıkıyordu. Şimdi her ligden
+        # sırayla birer maç alınır (ligler kalabalıktan az kalabalığa, ligin içinde
+        # başlama saatine göre), böylece adaylar birçok ligi kapsar.
+        ordered_leagues = sorted(top_leagues, key=lambda lid: (-per_league[lid], lid))
+        queues = {
+            lid: sorted((f for f in upcoming if f.league_id == lid), key=lambda f: (f.kickoff, f.match_id))
+            for lid in ordered_leagues
+        }
+        picked: list[Fixture] = []
+        while len(picked) < MAX_CANDIDATES and any(queues.values()):
+            for lid in ordered_leagues:
+                if queues[lid] and len(picked) < MAX_CANDIDATES:
+                    picked.append(queues[lid].pop(0))
+        return picked, total
 
     async def _analyze_all(self, fixtures: list[Fixture], pool: _Pool) -> None:
         """Maçları sırayla analiz eder ve sonuçları paylaşılan `pool`a EKLER; böylece
