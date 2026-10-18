@@ -23,7 +23,7 @@ import logging
 import os
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from app.cache.cache import TTLCache
@@ -34,7 +34,7 @@ from app.providers.models import Fixture, MatchRawDataset
 from app.schemas.picks import DailyPicksResponse, PickCandidate
 from app.schemas.prediction import MatchPrediction
 from app.services.analysis_service import AnalysisService
-from app.services.fixture_selection import select_upcoming
+from app.services.fixture_selection import istanbul_today, select_upcoming
 
 import accuracy
 
@@ -62,6 +62,16 @@ MAX_CANDIDATES = int(os.getenv("DAILY_PICKS_MAX_CANDIDATES", "24"))
 MAX_HT_LEAGUES = int(os.getenv("DAILY_PICKS_MAX_HT_LEAGUES", "14"))
 # İY/MS kartında "dönüş" kombinasyonları (1/2, 2/1) için en az model olasılığı.
 IYMS_MIN_SWING_PROBABILITY = float(os.getenv("IYMS_MIN_SWING_PROBABILITY", "0.02"))
+
+# ---- Kalıcı snapshot (Supabase) -------------------------------------------------
+# Kartlar kullanıcı beklerken hesaplanmaz: günlük havuz arka planda hazırlanır ve her kategori /
+# her adet için hazır sonuç Supabase'e yazılır. İstek bu snapshot'ı ANINDA okur (yeniden
+# deploy / uyku sonrası da kaybolmaz); bayatlamışsa eski sonuç gösterilirken arka planda yenilenir.
+SNAPSHOT_LIMITS = tuple(range(1, 13))
+SNAPSHOT_REFRESH_SECONDS = int(os.getenv("DAILY_PICKS_SNAPSHOT_REFRESH_MINUTES", "90")) * 60
+PRECOMPUTE_INTERVAL_SECONDS = int(os.getenv("DAILY_PICKS_PRECOMPUTE_MINUTES", "20")) * 60
+_CATEGORIES = ("ideal", "surprise", "iyms_surprise")
+_refresh_started: dict[str, float] = {}
 
 # Response-level cache: once a category has been built for a given date,
 # reuse it for a while instead of re-running the full analysis pipeline on
@@ -234,8 +244,10 @@ class DailyPicksService:
             _analysis_pool_cache.set(key, pool, ttl)
             _pool_live.pop(key, None)
             _pool_tasks.pop(key, None)
+        if pool.analyzed:
+            await self._save_snapshots(target, pool)
 
-    async def _get_pool(self, target: date) -> _Pool:
+    async def _get_pool(self, target: date, wait: float | None = REQUEST_WAIT_SECONDS) -> _Pool:
         key = target.isoformat()
         cached = _analysis_pool_cache.get(key)
         if cached is not None:
@@ -243,33 +255,21 @@ class DailyPicksService:
         task = _pool_tasks.get(key)
         if task is None:
             # Analiz ARKA PLANDA sürer (istek iptal olsa da); istek yalnızca
-            # REQUEST_WAIT_SECONDS bekler ve o ana kadarki sonuçla yanıt verir.
+            # `wait` saniye bekler ve o ana kadarki sonuçla yanıt verir.
             task = asyncio.create_task(self._build_pool(key, target))
             _pool_tasks[key] = task
         try:
-            await asyncio.wait_for(asyncio.shield(task), REQUEST_WAIT_SECONDS)
+            await asyncio.wait_for(asyncio.shield(task), wait)
         except asyncio.TimeoutError:
             live = _pool_live.get(key)
             if live is not None:
                 return live
         return _analysis_pool_cache.get(key) or _pool_live.get(key) or _Pool(analyzed=[], total_fixtures=0, selected=0, truncated=True)
 
-    async def build(self, category: str, target: date, limit: int = 4) -> DailyPicksResponse:
-        if category not in _DISCLAIMERS:
-            raise ValueError(f"Unknown picks category: {category!r}")
-
-        cache_key = f"{category}:{target.isoformat()}:{limit}"
-        cached = _picks_response_cache.get(cache_key)
-        if cached is not None:
-            return cached
-
-        pool = await self._get_pool(target)
+    # ------------------------------------------------------------ snapshots
+    def _assemble(self, category: str, target: date, limit: int, pool: _Pool) -> DailyPicksResponse:
+        """Havuzdan (saf, I/O'suz) bir kategorinin yanıtını üretir; kategoriler arası dışlama dahil."""
         analyzed = pool.analyzed
-
-        # Kategoriler arası dışlama: İdeal önce seçer, Sürpriz İdeal'dekileri,
-        # İY/MS ise ikisinin de seçtiği maçları kullanamaz -- üç kart AYNI maçı
-        # göstermez. (Havuz ortak ve deterministik olduğundan hangi kart önce
-        # istenirse istensin sonuç aynıdır.)
         ideal_picks = self._build_ideal(analyzed, limit)
         used = {p.match_id for p in ideal_picks}
         if category == "ideal":
@@ -301,17 +301,126 @@ class DailyPicksService:
             progress = f"{len(analyzed)}/{pool.selected or '?'} maç analiz edildi"
             note = (
                 f"Analiz arka planda sürüyor ({progress}); sağlayıcının hız sınırı nedeniyle birkaç dakika "
-                "sürebilir. Sayfayı yenilediğinizde sonuçlar tamamlanmış olacak."
-                + (f" Şu ana kadarki sonuç gösteriliyor." if picks else "")
+                "sürebilir. Sonuçlar hazır oldukça bu sayfada güncellenecek."
+                + (" Şu ana kadarki sonuç gösteriliyor." if picks else "")
             )
-
-        await self._record_for_accuracy(picks)
-
-        result = DailyPicksResponse(
+        return DailyPicksResponse(
             generated_at=datetime.now(timezone.utc), target_date=target, category=category,
             picks=picks, candidates_considered=len(analyzed),
             disclaimer=_DISCLAIMERS[category], note=note,
         )
+
+    async def _save_snapshots(self, target: date, pool: _Pool) -> None:
+        """Her kategori × adet için hazır yanıtı Supabase'e yazar (best-effort, asla hata fırlatmaz)."""
+        try:
+            now = datetime.now(timezone.utc).isoformat()
+            rows = []
+            for category in _CATEGORIES:
+                for limit in SNAPSHOT_LIMITS:
+                    resp = self._assemble(category, target, limit, pool)
+                    rows.append({
+                        "target_date": target.isoformat(), "category": f"{category}:{limit}",
+                        "payload": resp.model_dump(mode="json"), "updated_at": now,
+                    })
+            await accuracy._db(
+                "POST", "daily_picks_snapshot", params={"on_conflict": "target_date,category"},
+                json_body=rows, prefer=True,
+            )
+            logger.info("daily_picks: %s için %d snapshot kaydedildi (%d maç analiz edildi)",
+                        target.isoformat(), len(rows), len(pool.analyzed))
+        except Exception as exc:
+            logger.warning("daily_picks: snapshot kaydedilemedi: %s", exc)
+
+    async def _load_snapshot(self, category: str, target: date, limit: int):
+        """(response, yaş_saniye) veya None. Başlamış maçlar ayıklanır."""
+        try:
+            rows = await accuracy._db(
+                "GET", "daily_picks_snapshot",
+                params={
+                    "target_date": f"eq.{target.isoformat()}",
+                    "category": f"in.({category}:{limit},{category}:{SNAPSHOT_LIMITS[-1]})",
+                    "select": "category,payload,updated_at",
+                },
+            )
+        except Exception as exc:
+            logger.warning("daily_picks: snapshot okunamadı: %s", exc)
+            return None
+        by_cat = {r["category"]: r for r in rows or []}
+        now = datetime.now(timezone.utc)
+
+        def parse(row):
+            resp = DailyPicksResponse.model_validate(row["payload"])
+            updated = datetime.fromisoformat(str(row["updated_at"]).replace("Z", "+00:00"))
+            return resp, (now - updated).total_seconds()
+
+        exact = by_cat.get(f"{category}:{limit}")
+        if exact:
+            resp, age = parse(exact)
+            if all(p.kickoff > now for p in resp.picks):
+                return resp, age
+        # Bazı maçlar başladı (ya da satır yok): en büyük snapshot'tan başlamamış ilk `limit` seçim.
+        big = by_cat.get(f"{category}:{SNAPSHOT_LIMITS[-1]}")
+        if big:
+            resp, age = parse(big)
+            fresh = [p for p in resp.picks if p.kickoff > now][:limit]
+            if fresh:
+                resp.picks = fresh
+                resp.note = None if len(fresh) >= limit else resp.note
+                return resp, age
+        return None
+
+    async def _refresh_in_background(self, target: date) -> None:
+        key = target.isoformat()
+        last = _refresh_started.get(key, 0.0)
+        if key in _pool_tasks or (asyncio.get_event_loop().time() - last) < 600:
+            return
+        _refresh_started[key] = asyncio.get_event_loop().time()
+        try:
+            await self._get_pool(target, wait=None)
+        except Exception as exc:
+            logger.warning("daily_picks: arka plan yenileme başarısız: %s", exc)
+
+    async def precompute_loop(self) -> None:
+        """Sunucu ayaktayken bugünü ve yarını önceden hesaplar; kullanıcı beklemez."""
+        await asyncio.sleep(3)
+        while True:
+            for offset in (0, 1):
+                target = istanbul_today() + timedelta(days=offset)
+                try:
+                    pool_key = target.isoformat()
+                    snap = await self._load_snapshot("ideal", target, SNAPSHOT_LIMITS[-1])
+                    if snap is None or snap[1] > SNAPSHOT_REFRESH_SECONDS:
+                        _analysis_pool_cache.invalidate(pool_key)
+                        await self._get_pool(target, wait=None)
+                except Exception as exc:
+                    logger.warning("daily_picks: önhesaplama hatası (%s): %s", target, exc)
+            await asyncio.sleep(PRECOMPUTE_INTERVAL_SECONDS)
+
+    async def build(self, category: str, target: date, limit: int = 4) -> DailyPicksResponse:
+        if category not in _DISCLAIMERS:
+            raise ValueError(f"Unknown picks category: {category!r}")
+
+        cache_key = f"{category}:{target.isoformat()}:{limit}"
+        cached = _picks_response_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        # 1) Hazır snapshot varsa ANINDA döner (bayatsa arka planda yenilenir).
+        if limit in SNAPSHOT_LIMITS:
+            snap = await self._load_snapshot(category, target, limit)
+            if snap is not None:
+                result, age = snap
+                if age > SNAPSHOT_REFRESH_SECONDS:
+                    asyncio.create_task(self._refresh_in_background(target))
+                _picks_response_cache.set(cache_key, result, 60)
+                await self._record_for_accuracy(result.picks)
+                return result
+
+        # 2) Snapshot yok: ortak havuzdan hesapla (kısa süre bekler, kalanı arka planda sürer).
+        pool = await self._get_pool(target)
+        result = self._assemble(category, target, limit, pool)
+        await self._record_for_accuracy(result.picks)
+        analyzed = pool.analyzed
         ttl = 8 if pool.truncated else (_PARTIAL_POOL_TTL_SECONDS if (pool.failed and not analyzed) else _PICKS_CACHE_TTL_SECONDS)
         _picks_response_cache.set(cache_key, result, ttl)
         return result

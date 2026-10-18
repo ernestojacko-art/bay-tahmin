@@ -16,6 +16,13 @@ import five_dollar_bridge as five
 ISTANBUL = ZoneInfo("Europe/Istanbul")
 
 app = intelligence_app
+
+
+@app.on_event("startup")
+async def _start_picks_precompute() -> None:
+    """Günlük kart sonuçlarını arka planda önceden hesaplar (kullanıcı beklemesin)."""
+    import asyncio
+    app.state.picks_precompute_task = asyncio.create_task(get_daily_picks_service().precompute_loop())
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

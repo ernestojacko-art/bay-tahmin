@@ -93,6 +93,7 @@ class HistoryPool:
             "last_error": None,
         }
         self._finished_ts = 0.0
+        self._db_ready = threading.Event()
         self._load_from_disk()
         if history_db.is_configured():
             threading.Thread(target=self._load_from_db, name="surprise-history-db", daemon=True).start()
@@ -108,6 +109,8 @@ class HistoryPool:
 
     def ensure_started(self, days: int) -> None:
         """Yükleyiciyi (yoksa/bayatsa) başlatır; zaten çalışıyorsa dokunmaz."""
+        if history_db.is_configured() and not self._db_ready.is_set():
+            return  # Supabase'ten yükleme sürerken API yükleyicisini gereksiz başlatma
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 return
@@ -240,6 +243,8 @@ class HistoryPool:
                 self.status["state"] = "complete"
         except Exception as exc:
             logger.warning("Supabase'ten havuz yüklenemedi: %s", exc)
+        finally:
+            self._db_ready.set()
 
     def _save_to_disk(self) -> None:
         try:

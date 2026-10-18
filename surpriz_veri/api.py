@@ -92,17 +92,36 @@ _WEEK_LOCK = threading.Lock()
 _WEEK_BG: set = set()
 
 
-def _week_fill_day(day, status: str, per_page: int, deadline: Optional[float]) -> None:
-    """Bir günün sayfalarını (kaldığı yerden) çeker; deadline dolunca bırakır."""
+_WEEK_NEXT: Dict[Any, Dict[str, Any]] = {}
+
+
+def _week_fill_day(day, status: str, per_page: int, deadline: Optional[float], refresh: bool = True, background: bool = False) -> None:
+    """Bir günün sayfalarını (kaldığı yerden) çeker; deadline dolunca bırakır.
+
+    Süresi dolan gün önbelleği BOŞALTILMAZ: eski satırlar sunulmaya devam eder, yeni liste ayrı
+    bir girişte doldurulur ve tamamlanınca eskisiyle yer değiştirir (kullanıcı hiç boş liste görmez).
+    ``refresh=False`` (istek yolu): var olan giriş (bayat olsa da) olduğu gibi kullanılır.
+    """
     key = (day, status)
     with _WEEK_LOCK:
-        entry = _WEEK_CACHE.get(key)
-        if entry is None or (entry["complete"] and time.time() - entry["ts"] > _WEEK_TTL):
+        cur = _WEEK_CACHE.get(key)
+        if cur is None:
             entry = {"rows": [], "next_page": 1, "complete": False, "ts": time.time()}
             _WEEK_CACHE[key] = entry
-        if entry["complete"]:
+            cur = None
+        elif not cur["complete"]:
+            entry = cur
+        elif time.time() - cur["ts"] > _WEEK_TTL:
+            if not refresh:
+                return
+            entry = _WEEK_NEXT.get(key)
+            if entry is None:
+                entry = {"rows": [], "next_page": 1, "complete": False, "ts": time.time()}
+                _WEEK_NEXT[key] = entry
+        else:
             return
     client = _client()
+    client.background = background
     while not entry["complete"]:
         if deadline is not None and time.monotonic() > deadline:
             return
@@ -121,6 +140,32 @@ def _week_fill_day(day, status: str, per_page: int, deadline: Optional[float]) -
                 if not rows or not (isinstance(pagination, dict) and pagination.get("has_more")) or page >= 60:
                     entry["complete"] = True
                     entry["ts"] = time.time()
+                    if _WEEK_NEXT.get(key) is entry:  # yenisi tamamlandı: eskisiyle değiştir
+                        _WEEK_CACHE[key] = entry
+                        del _WEEK_NEXT[key]
+
+
+def _istanbul_week_days(extra_days: int = 7):
+    """Frontend'in (Türkiye saatiyle gün başı) haftalık penceresiyle birebir aynı 24 saatlik parçalar."""
+    tz = timezone(timedelta(hours=3))
+    start = datetime.now(tz).replace(hour=0, minute=0, second=0, microsecond=0)
+    out = []
+    for i in range(extra_days):
+        d0 = start + timedelta(days=i)
+        out.append((int(d0.timestamp()), int((d0 + timedelta(days=1)).timestamp()) - 1))
+    return out
+
+
+def _week_warm_loop() -> None:
+    """Sunucu ayaktayken hafta listesini önceden hazırlar/yeniler (kullanıcı beklemesin)."""
+    time.sleep(5)
+    while True:
+        try:
+            for day in _istanbul_week_days():
+                _week_fill_day(day, "scheduled", 100, None, refresh=True, background=True)
+        except Exception as exc:
+            logger.warning("hafta listesi önhesaplama hatası: %s", exc)
+        time.sleep(_WEEK_TTL // 2)
 
 
 def _week_start_background(days, status: str, per_page: int) -> None:
@@ -133,7 +178,7 @@ def _week_start_background(days, status: str, per_page: int) -> None:
     def work():
         try:
             for day in days:
-                _week_fill_day(day, status, per_page, None)
+                _week_fill_day(day, status, per_page, None, refresh=True, background=True)
         except Exception as exc:
             logger.warning("hafta listesi arka plan doldurma hatası: %s", exc)
         finally:
@@ -321,13 +366,17 @@ def weekly_fixtures(
     deadline = time.monotonic() + WEEK_BUDGET_SECONDS
     try:
         for day in day_keys:
-            _week_fill_day(day, status, per_page, deadline)
+            _week_fill_day(day, status, per_page, deadline, refresh=False)
     except FootballAPIError as exc:
         logger.exception("FootballAPIError: %s", exc)
         if not any(_WEEK_CACHE.get((d, status), {}).get("rows") for d in day_keys):
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    pending = [d for d in day_keys if not _WEEK_CACHE.get((d, status), {}).get("complete")]
+    pending = [
+        d for d in day_keys
+        if not _WEEK_CACHE.get((d, status), {}).get("complete")
+        or time.time() - _WEEK_CACHE[(d, status)]["ts"] > _WEEK_TTL
+    ]
     if pending:
         _week_start_background(pending, status, per_page)
 
@@ -337,7 +386,8 @@ def weekly_fixtures(
             fixture_id = fixture.get("id") or fixture.get("fixture_id")
             if fixture_id is not None:
                 unique[str(fixture_id)] = fixture
-    return {"data": list(unique.values()), "count": len(unique), "partial": bool(pending)}
+    still_filling = [d for d in day_keys if not _WEEK_CACHE.get((d, status), {}).get("complete")]
+    return {"data": list(unique.values()), "count": len(unique), "partial": bool(still_filling)}
 
 
 @app.get("/fixtures/{fixture_id}")
@@ -373,6 +423,20 @@ def fixture_odds_history(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+_ANALYSIS_CACHE: Dict[Any, Any] = {}
+_ANALYSIS_TTL = 30 * 60
+
+
+@app.on_event("startup")
+def _warm_on_startup() -> None:
+    """Uyanır uyanmaz havuzu (Supabase'ten) ve hafta listesini hazırla: ilk tıklama beklemesin."""
+    try:
+        _history_pool()  # kurucu diskten + Supabase'ten yüklemeyi arka planda başlatır
+    except Exception as exc:
+        logger.warning("havuz başlangıç yüklemesi başarısız: %s", exc)
+    threading.Thread(target=_week_warm_loop, name="week-warm", daemon=True).start()
+
+
 @app.get("/analyze/{fixture_id}")
 def analyze(
     fixture_id: int,
@@ -380,16 +444,33 @@ def analyze(
     limit: int = Query(default=20, ge=1, le=100),
 ) -> Dict[str, Any]:
     """Gerçek benzer tarihsel maçlar + 5 havuzlu kanıt motoru + AI notu."""
+    cache_key = (fixture_id, days, limit)
+    hit = _ANALYSIS_CACHE.get(cache_key)
+    if hit and time.time() - hit[0] < _ANALYSIS_TTL:
+        return hit[1]
+    result = _analyze_uncached(fixture_id, days, limit)
+    _ANALYSIS_CACHE[cache_key] = (time.time(), result)
+    if len(_ANALYSIS_CACHE) > 200:
+        for k in sorted(_ANALYSIS_CACHE, key=lambda k: _ANALYSIS_CACHE[k][0])[:50]:
+            _ANALYSIS_CACHE.pop(k, None)
+    return result
+
+
+def _analyze_uncached(fixture_id: int, days: int, limit: int) -> Dict[str, Any]:
     try:
         current = _current_match(fixture_id)
-        historical = _historical_matches(days, current)
+        # Takım formu (2 API çağrısı) ile havuz hazırlığı paralel yürür.
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=2) as pool_exec:
+            forms_future = pool_exec.submit(_team_history_summary, current)
+            historical = _historical_matches(days, current)
+            forms = forms_future.result()
         similar = find_similar_matches(
             current,
             historical,
             display_limit=limit,
         )
 
-        forms = _team_history_summary(current)
         ai = build_ai_note(
             current.home_team,
             current.away_team,
