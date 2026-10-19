@@ -26,6 +26,16 @@ class TeamStrengthProfile(BaseModel):
     away_strength: Optional[float] = None
     opponent_adjusted: float
 
+    # Küçük örneklem için lig ortalamasına doğru çekilmiş (shrunk) maç başı gol değerleri.
+    goals_for_avg: Optional[float] = None
+    goals_against_avg: Optional[float] = None
+    home_goals_for: Optional[float] = None
+    home_goals_against: Optional[float] = None
+    away_goals_for: Optional[float] = None
+    away_goals_against: Optional[float] = None
+    home_sample: int = 0
+    away_sample: int = 0
+
     matches_considered: int
     data_quality: DataQuality
 

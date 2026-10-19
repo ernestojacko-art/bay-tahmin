@@ -21,6 +21,14 @@ from app.schemas.team import TeamStrengthProfile
 # clearly documented as such (not fabricated match data).
 LEAGUE_AVERAGE_GOALS_PER_MATCH = 1.35
 
+# Az maçlık örneklemde birkaç yüksek skorlu maç gücü şişirmesin diye gol oranları
+# lig ortalamasına doğru çekilir: (n*oran + K*lig) / (n + K). K "hayali maç" sayısıdır.
+SHRINK_PRIOR_MATCHES = 6
+
+
+def _shrink(rate: float, n: int) -> float:
+    return (n * rate + SHRINK_PRIOR_MATCHES * LEAGUE_AVERAGE_GOALS_PER_MATCH) / (n + SHRINK_PRIOR_MATCHES)
+
 
 def _weighted_goal_rate(matches: list[RecentMatch], attr: str, weights: tuple[float, float, float]) -> float | None:
     """Blend last-5 / last-10 / last-20 rates for a goals_for/goals_against style attribute."""
@@ -85,11 +93,16 @@ class TeamStrengthEngine:
         avg_gf = _weighted_goal_rate(matches, "goals_for", w)
         avg_ga = _weighted_goal_rate(matches, "goals_against", w)
 
+        shrunk_gf = shrunk_ga = None
         if avg_gf is None or avg_ga is None:
             notes.append("Yetersiz son maç geçmişi; güç profili nötr varsayılan değerler kullanıyor.")
             attack = 0.5
             defense = 0.5
         else:
+            n_all = min(len(matches), 20)
+            shrunk_gf = _shrink(avg_gf, n_all)
+            shrunk_ga = _shrink(avg_ga, n_all)
+            avg_gf, avg_ga = shrunk_gf, shrunk_ga
             attack = min(1.0, max(0.0, (avg_gf / LEAGUE_AVERAGE_GOALS_PER_MATCH) / 2))
             # Lower goals-against => stronger defense, so invert.
             defense = min(1.0, max(0.0, 1 - (avg_ga / LEAGUE_AVERAGE_GOALS_PER_MATCH) / 2))
@@ -103,9 +116,12 @@ class TeamStrengthEngine:
         away_matches = dataset.recent_matches_away
         home_strength = None
         away_strength = None
+        split_home = [None, None]
+        split_away = [None, None]
         if home_matches:
             home_gf = _weighted_goal_rate(home_matches, "goals_for", w) or 0.0
             home_ga = _weighted_goal_rate(home_matches, "goals_against", w) or 0.0
+            split_home = [_shrink(home_gf, len(home_matches)), _shrink(home_ga, len(home_matches))]
             home_strength = min(
                 1.0,
                 max(
@@ -120,6 +136,7 @@ class TeamStrengthEngine:
         if away_matches:
             away_gf = _weighted_goal_rate(away_matches, "goals_for", w) or 0.0
             away_ga = _weighted_goal_rate(away_matches, "goals_against", w) or 0.0
+            split_away = [_shrink(away_gf, len(away_matches)), _shrink(away_ga, len(away_matches))]
             away_strength = min(
                 1.0,
                 max(
@@ -181,6 +198,14 @@ class TeamStrengthEngine:
             form=round(recent_form, 4),
             home_strength=round(home_strength, 4) if home_strength is not None else None,
             away_strength=round(away_strength, 4) if away_strength is not None else None,
+            goals_for_avg=round(shrunk_gf, 3) if shrunk_gf is not None else None,
+            goals_against_avg=round(shrunk_ga, 3) if shrunk_ga is not None else None,
+            home_goals_for=round(split_home[0], 3) if split_home[0] is not None else None,
+            home_goals_against=round(split_home[1], 3) if split_home[1] is not None else None,
+            away_goals_for=round(split_away[0], 3) if split_away[0] is not None else None,
+            away_goals_against=round(split_away[1], 3) if split_away[1] is not None else None,
+            home_sample=len(home_matches or []),
+            away_sample=len(away_matches or []),
             opponent_adjusted=round(opponent_adjusted, 4),
             matches_considered=matches_considered,
             data_quality=quality,

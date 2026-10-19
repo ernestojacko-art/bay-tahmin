@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from app.core.config import Settings, TeamStrengthWeights
 from app.intelligence import statistical_models as stats
 from app.intelligence.confidence_engine import build_confidence_report
+from app.intelligence.market_blend import blend_with_market, build_rationale, model_weight
 from app.intelligence.market_cross_check import cross_check
 from app.intelligence.sanity_engine import SanityContradictionEngine
 from app.intelligence.scenario_engine import build_scenarios
@@ -51,28 +52,38 @@ class PredictionEngine:
 
         ensemble = stats.build_ensemble(settings, poisson_1x2, elo_1x2, form_1x2)
 
+        # Market Cross-Check ham model üzerinden hesaplanır (sapma / sürpriz sinyali için).
+        market_comparison = cross_check(ensemble.ensemble_1x2, dataset.odds_markets)
+
+        # Nihai 1X2: veri güvenilirliğine göre model + piyasa dengelemesi.
+        weight = model_weight(home_profile, away_profile)
+        final_1x2 = blend_with_market(ensemble.ensemble_1x2, market_comparison.market_implied, weight)
+
         btts = stats.btts_probability(score_matrix)
         over_under = stats.over_under_lines(score_matrix)
-        double_chance = stats.double_chance_from_1x2(ensemble.ensemble_1x2)
-        draw_no_bet = stats.draw_no_bet_from_1x2(ensemble.ensemble_1x2)
+        double_chance = stats.double_chance_from_1x2(final_1x2)
+        draw_no_bet = stats.draw_no_bet_from_1x2(final_1x2)
         asian_handicap = stats.asian_handicap_lines(score_matrix)
         ht_1x2, htft = stats.half_time_full_time(
             expected_goals.home_xg,
             expected_goals.away_xg,
             max_goals=settings.poisson_max_goals,
             rho=settings.dixon_coles_rho,
+            ft_override=final_1x2 if market_comparison.market_implied is not None else None,
         )
 
-        # Market Cross-Check runs before scenarios/surprises so both can note
-        # when the model's own favorite differs from what the market prices in.
-        market_comparison = cross_check(ensemble.ensemble_1x2, dataset.odds_markets)
+        rationale = build_rationale(
+            home_profile, away_profile, expected_goals, ensemble.ensemble_1x2, final_1x2,
+            market_comparison.market_implied, weight,
+        )
 
         scenarios = build_scenarios(
-            ensemble.ensemble_1x2,
+            final_1x2,
             expected_goals,
             dataset.fixture.home_team.name,
             dataset.fixture.away_team.name,
             market_comparison.market_implied,
+            rationale=rationale,
         )
 
         # top_n=9: kullanıcı talebi üzerine artık İY/MS'nin TÜM 9 kombinasyonu
@@ -81,7 +92,7 @@ class PredictionEngine:
         # "İY/MS Sürpriz 4'lü" daily-picks motorunun 4 seçimi mümkün olan en
         # geniş kombinasyon/maç çeşitliliğinden seçmesini sağlıyor.
         surprises = rank_surprises(
-            htft, ensemble.ensemble_1x2, home_profile, away_profile, ensemble.model_agreement,
+            htft, final_1x2, home_profile, away_profile, ensemble.model_agreement,
             market_comparison, dataset.odds_markets, top_n=9,
         )
 
@@ -91,7 +102,7 @@ class PredictionEngine:
 
         confidence = build_confidence_report(
             settings,
-            ensemble.ensemble_1x2,
+            final_1x2,
             ensemble.model_agreement,
             home_profile,
             away_profile,
@@ -121,7 +132,7 @@ class PredictionEngine:
             generated_at=datetime.now(timezone.utc),
             home_team=home_profile,
             away_team=away_profile,
-            one_x_two=ensemble.ensemble_1x2,
+            one_x_two=final_1x2,
             double_chance=double_chance,
             draw_no_bet=draw_no_bet,
             expected_goals=expected_goals,

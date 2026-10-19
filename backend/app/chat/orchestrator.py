@@ -284,13 +284,13 @@ def _narrate_model_vs_market(prediction: MatchPrediction) -> list[str]:
     ]
     lines = ["", "Model ve piyasa karşılaştırması:"]
     for name, m, k in rows:
-        lines.append(f"• {name}: model %{m*100:.1f} | piyasa %{k*100:.1f} | fark {(m-k)*100:+.1f} puan")
+        lines.append(f"• {name}: analiz %{m*100:.1f} | piyasa %{k*100:.1f} | fark {(m-k)*100:+.1f} puan")
     market_fav = max(rows, key=lambda r: r[2])
     model_fav = max(rows, key=lambda r: r[1])
     gap = (market_fav[2] - market_fav[1]) * 100
     if gap >= 8 and model_fav[0] != market_fav[0]:
         lines.append(
-            f"⚠ Sürpriz Uyarısı: Piyasa {market_fav[0]} lehine %{market_fav[2]*100:.1f} görürken model "
+            f"⚠ Sürpriz Uyarısı: Piyasa {market_fav[0]} lehine %{market_fav[2]*100:.1f} görürken analiz "
             f"%{market_fav[1]*100:.1f} veriyor ({gap:.1f} puan fark). Model {model_fav[0]} tarafını daha güçlü buluyor; "
             "bu fark bir sürpriz ihtimaline işaret eder, sonucu garanti etmez."
         )

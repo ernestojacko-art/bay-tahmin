@@ -25,6 +25,7 @@ def build_scenarios(
     home_team_name: str,
     away_team_name: str,
     market_implied: OneXTwoProbabilities | None = None,
+    rationale: str = "",
 ) -> list[MatchScenario]:
     scenarios: list[MatchScenario] = []
     tempo = _tempo_label(expected_goals.total_xg)
@@ -53,9 +54,8 @@ def build_scenarios(
         market_favorite_key, _, market_favorite_team = max(market_outcomes, key=lambda o: o[1])
         if market_favorite_key != favorite_key:
             market_note = (
-                f" (Not: Bahis piyasası burada {market_favorite_team}'ı favori görüyor -- "
-                "bu, modelin görüşü ile piyasanın görüşü arasında bir ayrışma; sürpriz "
-                "potansiyelinin kaynağı da tam olarak bu.)"
+                f" (Not: Bahis piyasası burada {market_favorite_team}'ı favori görüyor; "
+                "analiz ile piyasa arasındaki bu fark sürpriz ihtimalinin kaynağıdır.)"
             )
 
     if favorite_key == "draw":
@@ -65,8 +65,10 @@ def build_scenarios(
         )
         favorite_label = "Beraberlik (model favorisi)"
     else:
-        favorite_desc = f"{fav_team}, MODELİN bu maçı kazanma favorisi.{market_note}"
+        favorite_desc = f"Analizde {fav_team} öne çıkıyor.{market_note}"
         favorite_label = f"{fav_team} (model favorisi)"
+    if rationale:
+        favorite_desc = f"{favorite_desc} {rationale}"
     scenarios.append(
         MatchScenario(
             scenario_type="favorite",

@@ -37,7 +37,30 @@ def _poisson_pmf(k: int, lam: float) -> float:
     return math.exp(-lam) * (lam**k) / math.factorial(k)
 
 
+def _blend(overall: float | None, split: float | None) -> float | None:
+    if overall is None:
+        return None
+    return overall if split is None else 0.5 * overall + 0.5 * split
+
+
 def compute_expected_goals(home: TeamStrengthProfile, away: TeamStrengthProfile) -> ExpectedGoals:
+    """Maç başı gol beklentisi.
+
+    Gerçek gol verisi varsa klasik hücum x rakip savunma çarpanı kullanılır:
+    xG_ev = ev_attığı x deplasman_yediği / lig_ort. Değerler küçük örneklem için
+    lig ortalamasına doğru çekilmiştir; iç saha/deplasman verisi %50 ağırlıkla karışır.
+    """
+    if (home.goals_for_avg is not None and home.goals_against_avg is not None
+            and away.goals_for_avg is not None and away.goals_against_avg is not None):
+        h_gf = _blend(home.goals_for_avg, home.home_goals_for)
+        h_ga = _blend(home.goals_against_avg, home.home_goals_against)
+        a_gf = _blend(away.goals_for_avg, away.away_goals_for)
+        a_ga = _blend(away.goals_against_avg, away.away_goals_against)
+        home_xg = h_gf * a_ga / LEAGUE_AVERAGE_GOALS_PER_MATCH * 1.06
+        away_xg = a_gf * h_ga / LEAGUE_AVERAGE_GOALS_PER_MATCH * 0.97
+        home_xg = min(3.2, max(0.25, round(home_xg, 3)))
+        away_xg = min(3.2, max(0.25, round(away_xg, 3)))
+        return ExpectedGoals(home_xg=home_xg, away_xg=away_xg, total_xg=round(home_xg + away_xg, 3))
     home_attack = home.home_strength if home.home_strength is not None else home.attack
     away_attack = away.away_strength if away.away_strength is not None else away.attack
     home_xg = LEAGUE_AVERAGE_GOALS_PER_MATCH * (home_attack * 2) * (1 - (away.defense - 0.5)) * HOME_ADVANTAGE_MULTIPLIER
@@ -119,13 +142,13 @@ def asian_handicap_lines(matrix: list[ScoreProbability], lines: tuple[float, ...
     return results
 
 
-def half_time_full_time(lam_home: float, lam_away: float, max_goals: int, rho: float) -> tuple[OneXTwoProbabilities, HalfTimeFullTimeProbabilities]:
+def half_time_full_time(lam_home: float, lam_away: float, max_goals: int, rho: float, ft_override: OneXTwoProbabilities | None = None) -> tuple[OneXTwoProbabilities, HalfTimeFullTimeProbabilities]:
     ht_lam_home = lam_home * FIRST_HALF_GOAL_SHARE
     ht_lam_away = lam_away * FIRST_HALF_GOAL_SHARE
     ht_matrix = build_score_matrix(ht_lam_home, ht_lam_away, max_goals=6, rho=rho)
     ht_1x2 = one_x_two_from_matrix(ht_matrix)
     ft_matrix = build_score_matrix(lam_home, lam_away, max_goals=max_goals, rho=rho)
-    ft_1x2 = one_x_two_from_matrix(ft_matrix)
+    ft_1x2 = ft_override or one_x_two_from_matrix(ft_matrix)
     labels = ["1", "X", "2"]
     ht_probs = [ht_1x2.home_win, ht_1x2.draw, ht_1x2.away_win]
     ft_probs = [ft_1x2.home_win, ft_1x2.draw, ft_1x2.away_win]
