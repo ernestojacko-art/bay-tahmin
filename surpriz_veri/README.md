@@ -1,6 +1,6 @@
 # Sürpriz Veri
 
-**Bay Tahmin – Tarihsel Oran ve Sürpriz Analiz Sistemi**
+**Ajan X – Tarihsel Oran ve Sürpriz Analiz Sistemi**
 
 Sürpriz Veri, futbol maçlarının açılış ve kapanış bahis oranlarını geçmiş maçlarla karşılaştırarak benzer oranlara sahip karşılaşmaları incelemek için geliştirilmiş bağımsız bir analiz modülüdür.
 
@@ -90,7 +90,7 @@ Veri kaynağından alınamayan bilgiler gerçek veri gibi gösterilmemelidir.
 
 ## 6. Kurulum
 
-Proje, ana Bay Tahmin deposu içerisindeki `surpriz_veri/` klasöründe bulunur.
+Proje, ana Futbol Ajanı deposu içerisindeki `surpriz_veri/` klasöründe bulunur.
 
 Gerekli Python paketlerini yüklemek için:
 

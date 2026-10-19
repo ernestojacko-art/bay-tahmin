@@ -4,7 +4,7 @@ SÜRPRİZ VERİ - Odds Profile Matcher Tests
 Opening ve Closing odds havuzlarının
 birbirine karışmadığını test eder.
 
-Bu testler mevcut Bay Tahmin sistemine dokunmaz.
+Bu testler mevcut Futbol Ajanı sistemine dokunmaz.
 """
 
 from .models import (

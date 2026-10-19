@@ -4,7 +4,7 @@ SÜRPRİZ VERİ - Movement Profile Matcher Tests
 Opening -> Closing hareket havuzunun
 ayrı çalıştığını test eder.
 
-Mevcut Bay Tahmin sistemine dokunmaz.
+Mevcut Futbol Ajanı sistemine dokunmaz.
 """
 
 from .models import (

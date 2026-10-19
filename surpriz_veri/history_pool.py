@@ -40,7 +40,7 @@ logger = logging.getLogger("surpriz_veri.history_pool")
 MAX_MATCHES = int(os.getenv("SURPRISE_HISTORY_MAX_MATCHES", "20000"))
 MAX_PAGES_PER_LEAGUE = int(os.getenv("SURPRISE_HISTORY_PAGES_PER_LEAGUE", "8"))
 PER_PAGE = 50
-# Arka plan yükleyici aynı API anahtarını Bay Tahmin ile paylaşır (hesap sınırı ~10 istek/dk,
+# Arka plan yükleyici aynı API anahtarını Futbol Ajanı ile paylaşır (hesap sınırı ~10 istek/dk,
 # iki servis arasında koordinasyon yok). Her sayfadan sonra bekleyerek kullanıcı
 # isteklerine (maç listesi, kartlar) yer bırakır: ~4-5 istek/dk.
 PAGE_DELAY_SECONDS = float(os.getenv("SURPRISE_HISTORY_PAGE_DELAY_SECONDS", "3"))

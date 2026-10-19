@@ -10,7 +10,7 @@ Amaç:
 - Eksik/bozuk kayıtların tüm taramayı durdurmasını önlemek
 - HistoricalStore'a temiz kayıtlar aktarmak
 
-Mevcut Bay Tahmin sistemine dokunmaz.
+Mevcut Futbol Ajanı sistemine dokunmaz.
 """
 
 from typing import List, Optional

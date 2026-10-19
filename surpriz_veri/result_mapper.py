@@ -8,7 +8,7 @@ Bu modül yalnızca gerçekleşmiş maç sonucunu işler.
 
 Odds verisine müdahale etmez.
 Opening / Closing ayrımına müdahale etmez.
-Mevcut Bay Tahmin sistemine dokunmaz.
+Mevcut Futbol Ajanı sistemine dokunmaz.
 """
 
 from typing import Any, Dict, Optional

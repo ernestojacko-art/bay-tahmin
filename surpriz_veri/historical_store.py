@@ -16,7 +16,7 @@ verilerini tek tarihsel kayıt altında korur.
 
 Ancak bu verileri birbirine karıştırmaz.
 
-Mevcut Bay Tahmin sistemine dokunmaz.
+Mevcut Futbol Ajanı sistemine dokunmaz.
 """
 
 from dataclasses import dataclass, field

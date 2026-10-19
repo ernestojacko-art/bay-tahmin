@@ -13,7 +13,7 @@ Movement başka bir havuzdur.
 
 Bu modül yalnızca Movement havuzunu kullanır.
 
-Mevcut Bay Tahmin sistemine dokunmaz.
+Mevcut Futbol Ajanı sistemine dokunmaz.
 """
 
 from dataclasses import dataclass

@@ -3,7 +3,7 @@ SÜRPRİZ VERİ - Main
 
 Bağımsız Sürpriz Veri analiz motorunun giriş noktası.
 
-Bu modül mevcut Bay Tahmin uygulamasına müdahale etmez.
+Bu modül mevcut Futbol Ajanı uygulamasına müdahale etmez.
 """
 
 from typing import Dict, List

@@ -10,7 +10,7 @@ Bu modül:
 - Odds history verisini ayrı alır.
 - Gerçekleşmiş sonucu ayrı mapper'a bırakır.
 
-Mevcut Bay Tahmin sistemine dokunmaz.
+Mevcut Futbol Ajanı sistemine dokunmaz.
 """
 
 from typing import Any, Dict, List, Optional

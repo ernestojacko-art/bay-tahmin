@@ -9,7 +9,7 @@ Sürpriz Veri motorunun MatchRecord modeline dönüştürür.
 - Closing odds ayrı tutulur.
 - Opening -> Closing movement ayrıca hesaplanır.
 - Market profili ayrıca tutulur.
-- Mevcut Bay Tahmin sistemine dokunmaz.
+- Mevcut Futbol Ajanı sistemine dokunmaz.
 """
 
 from typing import Any, Dict, List, Optional

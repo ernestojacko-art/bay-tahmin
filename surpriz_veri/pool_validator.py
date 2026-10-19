@@ -14,7 +14,7 @@ Amaç:
 
 kontrollerini yapmaktır.
 
-Mevcut Bay Tahmin sistemine dokunmaz.
+Mevcut Futbol Ajanı sistemine dokunmaz.
 """
 
 from dataclasses import dataclass

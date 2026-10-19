@@ -33,7 +33,7 @@ from .result_mapper import map_fixture_result
 
 app = FastAPI(
     title="Sürpriz Veri API",
-    description="Bay Tahmin'den bağımsız Sürpriz Veri analiz API'si.",
+    description="Futbol Ajanı'den bağımsız Sürpriz Veri analiz API'si.",
     version="1.3.0",
 )
 

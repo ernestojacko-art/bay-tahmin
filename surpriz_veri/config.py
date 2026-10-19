@@ -1,8 +1,8 @@
 """
 SÜRPRİZ VERİ - Configuration
 
-Bu modül mevcut Bay Tahmin sisteminden tamamen bağımsızdır.
-Mevcut Bay Tahmin dosyalarına müdahale etmez.
+Bu modül mevcut Futbol Ajanı sisteminden tamamen bağımsızdır.
+Mevcut Futbol Ajanı dosyalarına müdahale etmez.
 """
 
 from dataclasses import dataclass

@@ -18,7 +18,7 @@ HistoricalMatch
         ↓
 HistoricalStore
 
-Bu pipeline mevcut Bay Tahmin backend'ine dokunmaz.
+Bu pipeline mevcut Futbol Ajanı backend'ine dokunmaz.
 """
 
 from typing import List, Optional

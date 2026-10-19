@@ -3,7 +3,7 @@ SÜRPRİZ VERİ - 5DollarFootballAPI Data Provider
 
 Bu modül yalnızca Sürpriz Veri motorunun veri erişim katmanıdır.
 
-Mevcut Bay Tahmin backend'ine dokunmaz.
+Mevcut Futbol Ajanı backend'ine dokunmaz.
 
 Veri kaynağı:
     https://api.5dollarfootballapi.com/v1

@@ -12,7 +12,7 @@ bir endpoint bulunmuyor; bkz. historical_results() docstring'i.)
 
 Önemli:
     Bu modül SADECE Sürpriz Veri (surpriz_veri/) servisi içindir.
-    Ana Bay Tahmin backend'i (backend/) hâlâ 5DollarFootballAPI
+    Ana Futbol Ajanı backend'i (backend/) hâlâ 5DollarFootballAPI
     kullanır ve bu dosyadan etkilenmez.
 
 NosyAPI dokümantasyonu (www.nosyapi.com/api/iddaa-oranlari-ve-programi-api
