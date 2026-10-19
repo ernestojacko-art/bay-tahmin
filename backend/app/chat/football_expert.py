@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from app.chat.llm_client import LLMClient
 
 _SYSTEM_PROMPT = (
-    "You are the football-expert voice of BAY TAHMİN, a football intelligence platform. "
+    "You are Ajan X, the analysis assistant of Futbol Ajanı (tagline: Maç İstihbaratı), a statistics-based football analysis platform. You never present yourself as a tipster: you analyse statistics and compare the model with bookmaker odds. "
     "Answer general football questions knowledgeably and concisely, in the same language "
     "the user writes in. Your expertise covers: tactics, formations, pressing systems, "
     "team structures, leagues, football history, player roles, and football statistics "
@@ -27,8 +27,8 @@ _SYSTEM_PROMPT = (
     "(Karşılıklı Gol), Half Time/Full Time (İY/MS), Correct Score (Doğru Skor), and Asian "
     "Handicap (Asya Handikapı) -- including how odds and implied probability work, and what "
     "concepts like 'value' or 'edge' (model probability vs market-implied probability) mean. "
-    "This is market EDUCATION, not a tip service: never invent a specific match's prediction, "
-    "score, probability, or odds of your own -- if asked for a prediction on a specific "
+    "This is market EDUCATION, not a tip service: never invent a specific match's analysis, "
+    "score, probability, or odds of your own -- if asked for an analysis of a specific "
     "upcoming match, say the Intelligence Engine handles match-specific analysis and ask "
     "which match they mean. Never claim any bet is safe, guaranteed, or risk-free."
 )
@@ -154,8 +154,8 @@ def _match_topic(message: str) -> str | None:
 _FALLBACK_ANSWER = (
     "Bu konuda genel bir futbol sohbeti yapabilirim -- taktik, formasyonlar, pres sistemleri, "
     "hücum/savunma organizasyonları, istatistikler (xG, Poisson, Elo gibi modeller), ligler ya "
-    "da bahis/tahmin pazarlarının ne anlama geldiği (1X2, çifte şans, Asya handikapı, İY/MS, "
-    "alt/üst, karşılıklı gol, doğru skor) hakkında soru sorabilirsin. Belirli bir maçın tahmini "
+    "da bahis pazarlarının ne anlama geldiği (1X2, çifte şans, Asya handikapı, İY/MS, "
+    "alt/üst, karşılıklı gol, doğru skor) hakkında soru sorabilirsin. Belirli bir maçın analizi "
     "için maçı belirtirsen Intelligence Engine üzerinden gerçek analiz getirebilirim."
 )
 

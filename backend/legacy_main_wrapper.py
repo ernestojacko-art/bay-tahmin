@@ -27,7 +27,7 @@ app.add_middleware(
 
 @app.get("/", tags=["legacy-compat"])
 async def root_compat():
-    return {"status": "online", "agent": "Bay Tahmin", "engine": "BAY TAHMİN Football Intelligence Engine"}
+    return {"status": "online", "agent": "Ajan X", "engine": "Futbol Ajanı Football Intelligence Engine"}
 
 
 @app.get("/matches", tags=["legacy-compat"])

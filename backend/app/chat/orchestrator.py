@@ -1,4 +1,4 @@
-"""Bay Tahmin maç sohbeti: Intelligence Engine verilerini Türkçe ve açık biçimde anlatır."""
+"""Ajan X maç sohbeti: Intelligence Engine verilerini Türkçe ve açık biçimde anlatır."""
 from __future__ import annotations
 
 import re
@@ -240,7 +240,7 @@ def _narrate_surprises(prediction: MatchPrediction) -> str:
 def _narrate_confidence(prediction: MatchPrediction) -> str:
     c = prediction.confidence
     return (
-        f"En güçlü tahminime güven düzeyim %{c.confidence*100:.1f}. "
+        f"Modelin en güçlü sonucundaki güven düzeyi %{c.confidence*100:.1f}. "
         f"Risk seviyesi {_risk_tr(c.risk)}, veri kalitesi {_quality_tr(c.data_quality)}."
     )
 
@@ -270,6 +270,38 @@ def _narrate_asian_handicap(prediction: MatchPrediction) -> str:
     return "\n".join(lines)
 
 
+def _narrate_model_vs_market(prediction: MatchPrediction) -> list[str]:
+    """Model olasılığı ile piyasanın ima ettiği olasılık arasındaki fark + Sürpriz Uyarısı.
+    Yalnızca gerçek model ve piyasa verisinden üretilir; sonuç garantisi vermez."""
+    mc = prediction.market_comparison
+    if not mc.market_available or mc.market_implied is None:
+        return []
+    ox, mi = prediction.one_x_two, mc.market_implied
+    rows = [
+        (prediction.home_team.team_name, ox.home_win, mi.home_win),
+        ("Beraberlik", ox.draw, mi.draw),
+        (prediction.away_team.team_name, ox.away_win, mi.away_win),
+    ]
+    lines = ["", "Model ve piyasa karşılaştırması:"]
+    for name, m, k in rows:
+        lines.append(f"• {name}: model %{m*100:.1f} | piyasa %{k*100:.1f} | fark {(m-k)*100:+.1f} puan")
+    market_fav = max(rows, key=lambda r: r[2])
+    model_fav = max(rows, key=lambda r: r[1])
+    gap = (market_fav[2] - market_fav[1]) * 100
+    if gap >= 8 and model_fav[0] != market_fav[0]:
+        lines.append(
+            f"⚠ Sürpriz Uyarısı: Piyasa {market_fav[0]} lehine %{market_fav[2]*100:.1f} görürken model "
+            f"%{market_fav[1]*100:.1f} veriyor ({gap:.1f} puan fark). Model {model_fav[0]} tarafını daha güçlü buluyor; "
+            "bu fark bir sürpriz ihtimaline işaret eder, sonucu garanti etmez."
+        )
+    elif gap >= 8:
+        lines.append(
+            f"⚠ Sürpriz Uyarısı: Piyasanın {market_fav[0]} için verdiği olasılık modelden {gap:.1f} puan yüksek; "
+            "favori ağır basıyor görünse de model bu kadar emin değil. Sürpriz ihtimali göz ardı edilmemeli."
+        )
+    return lines
+
+
 def _narrate_summary(prediction: MatchPrediction) -> str:
     ox = prediction.one_x_two
     eg = prediction.expected_goals
@@ -284,9 +316,10 @@ def _narrate_summary(prediction: MatchPrediction) -> str:
             f"Not: Bahis piyasası burada {market_favorite}'ı favori görüyor -- yani model "
             "ile piyasa bu maçta ayrışıyor, bu da onu potansiyel bir sürpriz adayı yapıyor."
         )
+    lines += _narrate_model_vs_market(prediction)
     lines += [
         "",
-        "Tahmin özeti:",
+        "Analiz özeti:",
         f"• Maç sonucu: {prediction.home_team.team_name} %{ox.home_win*100:.1f} | Beraberlik %{ox.draw*100:.1f} | {prediction.away_team.team_name} %{ox.away_win*100:.1f}",
         f"• En güçlü sonuç eğilimi (model): {favorite}",
         f"• Beklenen gol projeksiyonu: {eg.home_xg:.2f} - {eg.away_xg:.2f} (toplam {eg.total_xg:.2f})",
@@ -383,8 +416,8 @@ class ChatOrchestrator:
             )
         if response.note:
             lines += ["", response.note]
-        lines += ["", "[TANI-v3] Bu liste yalnızca gerçek, henüz başlamamış ve piyasası açık maçların analiz edilip "
-                  "gerçek piyasa olasılıklarıyla karşılaştırılmasıyla oluşturuldu."]
+        lines += ["", "[TANI-v3] Bu liste yalnızca gerçek, henüz başlamamış ve piyasası açık maçların istatistiksel analizinden "
+                  "ve piyasa olasılıklarıyla karşılaştırılmasından oluşur. Sonuç garantisi değildir."]
         return "\n".join(lines), [p.match_id for p in picks]
 
     async def _list_matches(self, message: str) -> str:
@@ -617,13 +650,13 @@ class ChatOrchestrator:
         )
         prompt = (
             f"Kullanıcı şunu soruyor: \"{message}\"\n\n"
-            f"Aşağıdaki GERÇEK model verilerini kullanarak, bu tahminin ARKASINDAKİ GEREKÇEYİ "
+            f"Aşağıdaki GERÇEK model verilerini kullanarak, bu analizin ARKASINDAKİ GEREKÇEYİ "
             "doğal, akıcı, kendinden emin bir futbol uzmanı üslubuyla Türkçe açıkla. "
             "Sayıları olduğu gibi kullan, yeni sayı uydurma. 3-5 cümle yeterli.\n\n"
             f"VERİLER:\n{facts}"
         )
         llm_reply = await self._llm_client.generate(
-            "Sen BAY TAHMİN'in futbol analiz motorusun. Sana verilen gerçek model "
+            "Sen Futbol Ajanı'nın analiz asistanı Ajan X'sin; istatistik ve piyasa oranlarını karşılaştırarak yorumlarsın, kesin sonuç vaat etmezsin. Sana verilen gerçek model "
             "çıktılarını, kullanıcının anlayacağı doğal bir dille gerekçelendiriyorsun. "
             "Asla yeni istatistik, oran ya da olasılık uydurmuyorsun -- sadece verilenleri yorumluyorsun.",
             prompt,
