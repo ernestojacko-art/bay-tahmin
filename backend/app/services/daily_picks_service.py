@@ -527,7 +527,7 @@ class DailyPicksService:
                 model_probability=joint_probability(item, surprise.combination),
                 market_probability=None, divergence=None,
                 confidence=surprise.confidence, risk=surprise.risk, data_quality=prediction.data_quality,
-                rationale=surprise.description,
+                rationale=f"{surprise.description} {prediction.analysis_rationale or ''}".strip(),
             )
 
         chosen: list[PickCandidate] = []

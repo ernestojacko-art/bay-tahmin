@@ -162,3 +162,4 @@ class MatchPrediction(BaseModel):
     warnings: list[str] = []
     disclaimers: list[str] = []
     historical_evidence: Optional[HistoricalEvidence] = None
+    analysis_rationale: Optional[str] = None

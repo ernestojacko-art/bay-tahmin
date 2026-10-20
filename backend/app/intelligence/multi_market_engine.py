@@ -138,8 +138,9 @@ def ideal_candidate_for_match(prediction: MatchPrediction, dataset: MatchRawData
     divergence = round(best_prob - best_market_prob, 4) if best_market_prob is not None else None
     rationale = (
         f"Model bu seçime %{best_prob*100:.1f} olasılık veriyor "
-        f"(güven: %{prediction.confidence.confidence*100:.1f}, veri kalitesi: {prediction.data_quality.value})."
-    )
+        f"(güven: %{prediction.confidence.confidence*100:.1f}, veri kalitesi: {prediction.data_quality.value}). "
+        + (prediction.analysis_rationale or "")
+    ).strip()
 
     return PickCandidate(
         match_id=fixture.match_id, home_team=home, away_team=away,
@@ -180,8 +181,9 @@ def surprise_candidates_for_match(prediction: MatchPrediction, dataset: MatchRaw
             data_quality=prediction.data_quality,
             rationale=(
                 f"Model bu seçime %{model_prob*100:.1f} olasılık veriyor, piyasa ise %{market_prob*100:.1f} "
-                f"görüyor -- %{divergence*100:.1f} puanlık gerçek bir piyasa/model ayrışması."
-            ),
+                f"görüyor -- %{divergence*100:.1f} puanlık gerçek bir piyasa/model ayrışması. "
+                + (prediction.analysis_rationale or "")
+            ).strip(),
         ))
 
     # 1X2: only the market's own FAVORITE can be "surprised against" -- i.e.

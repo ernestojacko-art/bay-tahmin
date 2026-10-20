@@ -390,7 +390,8 @@ class ChatOrchestrator:
             lines.append(
                 f"{index}. {p.home_team} - {p.away_team} ({kickoff_local}{league})\n"
                 f"   {p.market}: {p.selection} | Model: %{p.model_probability*100:.1f} | Güven: %{p.confidence*100:.1f} | "
-                f"Risk: {_risk_tr(p.risk)} | Veri kalitesi: {_quality_tr(p.data_quality)}"
+                f"Risk: {_risk_tr(p.risk)} | Veri kalitesi: {_quality_tr(p.data_quality)}\n"
+                f"   Gerekçe: {p.rationale}"
             )
         if response.note:
             lines += ["", response.note]
@@ -412,7 +413,8 @@ class ChatOrchestrator:
             lines.append(
                 f"{index}. {p.home_team} - {p.away_team} ({kickoff_local}{league})\n"
                 f"   İY/MS: {p.selection} | Model: %{p.model_probability*100:.1f} | "
-                f"Risk: {_risk_tr(p.risk)} | Güven: %{p.confidence*100:.1f}"
+                f"Risk: {_risk_tr(p.risk)} | Güven: %{p.confidence*100:.1f}\n"
+                f"   Gerekçe: {p.rationale}"
             )
         if response.note:
             lines += ["", response.note]

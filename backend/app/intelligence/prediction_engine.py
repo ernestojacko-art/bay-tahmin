@@ -151,4 +151,5 @@ class PredictionEngine:
             data_quality=overall_quality,
             warnings=warnings,
             disclaimers=disclaimers,
+            analysis_rationale=rationale,
         )
