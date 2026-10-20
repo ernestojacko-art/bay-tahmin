@@ -40,16 +40,37 @@ def _pct(x: float) -> str:
     return f"%{x * 100:.0f}"
 
 
-def _scoring_line(p: TeamStrengthProfile, at_home: bool) -> str | None:
+def _num(x: float) -> str:
+    return f"{x:.1f}".replace(".", ",")
+
+
+def _team_sentence(p: TeamStrengthProfile, at_home: bool, role: str) -> str | None:
     gf = p.home_goals_for if at_home else p.away_goals_for
     ga = p.home_goals_against if at_home else p.away_goals_against
     n = p.home_sample if at_home else p.away_sample
-    where = "iç sahada" if at_home else "deplasmanda"
-    if gf is None or ga is None or n <= 0:
-        gf, ga, n, where = p.goals_for_avg, p.goals_against_avg, p.matches_considered, "son maçlarda"
+    if gf is not None and ga is not None and n > 0:
+        where = "iç saha" if at_home else "deplasman"
+        return (f"{role} {p.team_name} son {n} {where} maçında maç başına ortalama {_num(gf)} gol attı, "
+                f"{_num(ga)} gol yedi.")
+    gf, ga, n = p.goals_for_avg, p.goals_against_avg, p.matches_considered
     if gf is None or ga is None or n <= 0:
         return None
-    return f"{p.team_name} {where} ({n} maç) maç başı {gf:.1f} gol atıp {ga:.1f} yiyor"
+    return f"{role} {p.team_name} son {n} maçında maç başına ortalama {_num(gf)} gol attı, {_num(ga)} gol yedi."
+
+
+def _h2h_sentence(home: TeamStrengthProfile, h2h) -> str:
+    if not h2h:
+        return "İki takımın yakın geçmişte oynadığı kayıtlı bir maç bulunamadı."
+    w = d = l = 0
+    for m in h2h:
+        if m.goals_for > m.goals_against:
+            w += 1
+        elif m.goals_for == m.goals_against:
+            d += 1
+        else:
+            l += 1
+    return (f"İki takımın son {len(h2h)} karşılaşmasında {home.team_name} {w} galibiyet, {d} beraberlik, "
+            f"{l} mağlubiyet aldı.")
 
 
 def build_rationale(
@@ -60,14 +81,19 @@ def build_rationale(
     final: OneXTwoProbabilities,
     market: OneXTwoProbabilities | None,
     weight: float,
+    h2h=None,
 ) -> str:
+    """Üyelerin kolay anlayacağı, sade Türkçe gerekçe. Yalnızca gerçek verilerden üretilir."""
     parts: list[str] = []
-    hl, al = _scoring_line(home, True), _scoring_line(away, False)
-    stats_bits = [x for x in (hl, al) if x]
-    if stats_bits:
-        parts.append("Veriler: " + "; ".join(stats_bits) + f". Beklenen gol {xg.home_xg:.2f} - {xg.away_xg:.2f}.")
+    bits = [x for x in (_team_sentence(home, True, "Ev sahibi"), _team_sentence(away, False, "Deplasman takımı")) if x]
+    if bits:
+        parts.append(" ".join(bits))
+        parts.append(
+            f"Bu rakamlara göre maçta yaklaşık {_num(xg.home_xg)} - {_num(xg.away_xg)} gol bekleniyor."
+        )
     else:
-        parts.append("Bu maç için yeterli gol verisi yok; analiz lig ortalamalarına yaslanıyor.")
+        parts.append("Bu maç için yeterli gol verisi bulunamadı, bu yüzden analiz lig ortalamalarına dayanıyor.")
+    parts.append(_h2h_sentence(home, h2h))
 
     if market is not None:
         names = [(home.team_name, final.home_win, market.home_win, raw.home_win),
@@ -76,20 +102,19 @@ def build_rationale(
         mkt_fav = max(names, key=lambda r: r[2])
         fin_fav = max(names, key=lambda r: r[1])
         parts.append(
-            f"Piyasa en çok {mkt_fav[0]} sonucunu {_pct(mkt_fav[2])} ile fiyatlıyor; istatistiksel model tek başına "
-            f"{mkt_fav[0]} için {_pct(mkt_fav[3])} veriyor."
+            f"Bahis şirketlerinin en çok güvendiği sonuç: {mkt_fav[0]} ({_pct(mkt_fav[2])}). "
+            f"Sadece istatistiklere bakınca bu sonucun oranı {_pct(mkt_fav[3])} çıkıyor."
         )
-        n_min = min(home.matches_considered, away.matches_considered)
         parts.append(
-            f"Ham modele tek başına güvenmemek için sonuç, model (%{weight*100:.0f}) ve "
-            f"piyasa (%{(1-weight)*100:.0f}) karışımıyla dengelendi (iki takımdan en az {n_min} maçlık veri; veri azaldıkça piyasa ağırlığı artar)."
+            f"İstatistikler tek başına yanıltabileceği için iki görüşü birleştirdik "
+            f"(istatistiğe {_pct(weight)}, bahis oranlarına {_pct(1 - weight)} ağırlık verdik). "
+            f"Birleşik sonuçta öne çıkan: {fin_fav[0]} ({_pct(fin_fav[1])})."
         )
         gap = mkt_fav[2] - mkt_fav[1]
         if gap >= SURPRISE_GAP:
             parts.append(
-                f"Dengeye rağmen {mkt_fav[0]} için piyasa modelden {gap * 100:.0f} puan daha yüksek; "
-                "bu fark sürpriz ihtimalinin kaynağıdır, sonucu garanti etmez."
+                f"Dikkat: Bahis şirketleri ile bizim analizimiz arasında hâlâ {gap * 100:.0f} puanlık fark var. "
+                "Bu, maçta sürpriz çıkma ihtimalinin biraz yüksek olduğunu gösterir. "
+                "Yine de kesin sonuç değildir; sakatlık ve kadro gibi bilgiler analize dahil değildir."
             )
-        elif fin_fav[0] != mkt_fav[0]:
-            parts.append(f"Dengeli analiz {fin_fav[0]} tarafını hafif önde görüyor; fark küçük.")
     return " ".join(parts)

@@ -26,6 +26,41 @@ from app.schemas.common import DataQuality
 from app.schemas.prediction import MatchPrediction
 
 
+MIN_SPLIT_SAMPLE = 5
+MAX_SPLIT_SAMPLE = 10
+MAX_OVERALL_SAMPLE = 20
+
+
+def _by_date(matches):
+    return sorted(matches, key=lambda m: m.date, reverse=True)
+
+
+def balanced_team_data(home_data, away_data):
+    """İki takımı AYNI maç sayısıyla kıyaslar (adil karşılaştırma).
+
+    Genel form: ikisinde de en yeni N maç (N = ikisinin de sahip olduğu en küçük sayı, en çok 20).
+    İç saha / deplasman: ev sahibinin iç saha maçları ile deplasman takımının deplasman maçları
+    aynı sayıda alınır (en çok 10). Bu sayı 5'ten azsa ayrım hiç kullanılmaz.
+    """
+    n_all = min(len(home_data.recent_matches), len(away_data.recent_matches), MAX_OVERALL_SAMPLE)
+    h_home = _by_date(home_data.recent_matches_home)
+    a_away = _by_date(away_data.recent_matches_away)
+    n_split = min(len(h_home), len(a_away), MAX_SPLIT_SAMPLE)
+    use_split = n_split >= MIN_SPLIT_SAMPLE
+
+    def rebuild(data, own_home, own_away):
+        return data.model_copy(update={
+            "recent_matches": _by_date(data.recent_matches)[:n_all],
+            "recent_matches_home": own_home[:n_split] if use_split else [],
+            "recent_matches_away": own_away[:n_split] if use_split else [],
+        })
+
+    return (
+        rebuild(home_data, h_home, _by_date(home_data.recent_matches_away)),
+        rebuild(away_data, _by_date(away_data.recent_matches_home), a_away),
+    )
+
+
 class PredictionEngine:
     def __init__(self, settings: Settings, team_strength_weights: TeamStrengthWeights):
         self._settings = settings
@@ -35,8 +70,9 @@ class PredictionEngine:
     def analyze(self, dataset: MatchRawDataset) -> MatchPrediction:
         settings = self._settings
 
-        home_profile = self._team_strength_engine.compute_profile(dataset.home_team_data)
-        away_profile = self._team_strength_engine.compute_profile(dataset.away_team_data)
+        home_data, away_data = balanced_team_data(dataset.home_team_data, dataset.away_team_data)
+        home_profile = self._team_strength_engine.compute_profile(home_data)
+        away_profile = self._team_strength_engine.compute_profile(away_data)
 
         expected_goals = stats.compute_expected_goals(home_profile, away_profile)
 
@@ -75,6 +111,7 @@ class PredictionEngine:
         rationale = build_rationale(
             home_profile, away_profile, expected_goals, ensemble.ensemble_1x2, final_1x2,
             market_comparison.market_implied, weight,
+            h2h=(dataset.h2h.matches if dataset.h2h else []),
         )
 
         scenarios = build_scenarios(

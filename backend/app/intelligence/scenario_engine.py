@@ -54,8 +54,7 @@ def build_scenarios(
         market_favorite_key, _, market_favorite_team = max(market_outcomes, key=lambda o: o[1])
         if market_favorite_key != favorite_key:
             market_note = (
-                f" (Not: Bahis piyasası burada {market_favorite_team}'ı favori görüyor; "
-                "analiz ile piyasa arasındaki bu fark sürpriz ihtimalinin kaynağıdır.)"
+                f" (Bahis şirketlerinin favorisi: {market_favorite_team}.)"
             )
 
     if favorite_key == "draw":

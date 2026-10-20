@@ -284,13 +284,35 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
             if tid==str(team.team_id): return StandingsEntry(team=team,position=pos,played=r["played"],won=r["won"],drawn=r["drawn"],lost=r["lost"],goals_for=r["gf"],goals_against=r["ga"],points=r["points"])
         return None
 
+    @staticmethod
+    def _involves(raw: dict[str, Any], team_id: str) -> bool:
+        t=raw.get("teams") or {}
+        return str((t.get("home") or {}).get("id"))==str(team_id) or str((t.get("away") or {}).get("id"))==str(team_id)
+
+    async def _team_rows_for(self, team_id: str) -> list[dict[str, Any]]:
+        cache=self.__dict__.setdefault("_team_rows_cache",{})
+        key=str(team_id)
+        if key in cache: return cache[key]
+        try:
+            rows=await self._all_pages(f"teams/{team_id}/fixtures",{"status":"finished","order":"desc","lang":"en","per_page":50},max_pages=1)
+        except Exception:
+            return []  # hata önbelleğe alınmaz; sonraki istekte yeniden denenir
+        cache[key]=rows
+        return rows
+
     async def get_team_dataset(self, team_id: str, league_id: Optional[str] = None) -> TeamRawDataset:
         fixture=next((f for f in self._fixture_cache.values() if f.home_team.team_id==str(team_id) or f.away_team.team_id==str(team_id)),None)
         league_id=league_id or (fixture.league_id if fixture else None)
         if not league_id: raise ProviderError(f"League ID unavailable for team {team_id}")
         target=fixture.kickoff.date() if fixture else datetime.now(ZoneInfo("Europe/Istanbul")).date()
         rows=await self._league_rows(league_id,target); finished=self._finished(rows)
-        recent=[m for m in (self._recent(r,team_id) for r in finished) if m is not None]; recent.sort(key=lambda x:x.date,reverse=True)
+        # Takımın TÜM turnuvalardaki son maçları (lig + kupa + Avrupa): yalnızca bu maçın
+        # turnuvasına bakmak bazı takımlar için 1-2 maç bırakıyordu.
+        team_rows=await self._team_rows_for(team_id)
+        by_id={}
+        for r in finished+self._finished(team_rows):
+            by_id[str(r.get("id"))]=r
+        recent=[m for m in (self._recent(r,team_id) for r in by_id.values() if self._involves(r,team_id)) if m is not None and m.date<target]; recent.sort(key=lambda x:x.date,reverse=True)
         name=f"Team {team_id}"
         for r in rows:
             t=r.get("teams") or {}
@@ -315,13 +337,16 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
     async def get_h2h(self, team_a_id: str, team_b_id: str, limit: int = 10) -> Optional[H2HRecord]:
         fixture=next((f for f in self._fixture_cache.values() if f.home_team.team_id==str(team_a_id) or f.away_team.team_id==str(team_a_id)),None)
         if not fixture: return None
-        rows=await self._league_rows(fixture.league_id,fixture.kickoff.date()); out=[]
-        for r in self._finished(rows):
+        rows=await self._league_rows(fixture.league_id,fixture.kickoff.date())
+        pool=self._finished(rows)+self._finished(await self._team_rows_for(team_a_id))+self._finished(await self._team_rows_for(team_b_id))
+        seen={}; 
+        for r in pool:
             t=r.get("teams") or {}; h=t.get("home") or {}; a=t.get("away") or {}
             if {str(h.get("id")),str(a.get("id"))}!={str(team_a_id),str(team_b_id)}: continue
-            m=self._recent(r,team_a_id)
-            if m: out.append(m)
-        return H2HRecord(matches=out[-limit:]) if out else None
+            seen[str(r.get("id"))]=r
+        out=[m for m in (self._recent(r,team_a_id) for r in seen.values()) if m is not None and m.date<fixture.kickoff.date()]
+        out.sort(key=lambda x:x.date,reverse=True)
+        return H2HRecord(matches=out[:limit]) if out else None
 
     @staticmethod
     def _market_rows(payload: Any) -> list[OddsMarket]:
