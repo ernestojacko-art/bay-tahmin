@@ -162,7 +162,7 @@ def _week_warm_loop() -> None:
     while True:
         try:
             for day in _istanbul_week_days():
-                _week_fill_day(day, "scheduled", 100, None, refresh=True, background=True)
+                _week_fill_day(day, "all", 100, None, refresh=True, background=True)
         except Exception as exc:
             logger.warning("hafta listesi önhesaplama hatası: %s", exc)
         time.sleep(_WEEK_TTL // 2)
@@ -343,7 +343,7 @@ def fixtures(
 def weekly_fixtures(
     start_time: int = Query(...),
     end_time: int = Query(...),
-    status: str = Query(default="scheduled"),
+    status: str = Query(default="all"),
     per_page: int = Query(default=100, ge=1, le=500),
 ) -> Dict[str, Any]:
     """Haftalık programı, sağlayıcının 24 saatlik pencere sınırına uyarak toplar."""
