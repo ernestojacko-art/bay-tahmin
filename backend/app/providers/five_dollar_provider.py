@@ -252,7 +252,7 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
         end=datetime.combine(target+timedelta(days=1),datetime.min.time(),tzinfo=tz).astimezone(timezone.utc)
         # Yalnızca BİTMİŞ maçlar, en yeniden eskiye, en fazla 2 sayfa (~200 maç): form/güç
         # hesabı için yeterli; istek sayısı (ve 10/dk sınırında bekleme) belirgin düşer.
-        rows=await self._all_pages(f"leagues/{league_id}/fixtures", {"start_time":int(start.timestamp()),"end_time":int(end.timestamp()),"status":"finished","order":"desc","lang":"en","per_page":100}, max_pages=2)
+        rows=await self._all_pages(f"leagues/{league_id}/fixtures", {"start_time":int(start.timestamp()),"end_time":int(end.timestamp()),"status":"finished","order":"desc","lang":"en","per_page":100}, max_pages=1)
         self._league_cache[key]=rows; return rows
 
     @staticmethod

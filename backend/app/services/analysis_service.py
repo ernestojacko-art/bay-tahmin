@@ -9,6 +9,10 @@ should not talk to providers or the Prediction Engine directly.
 """
 from __future__ import annotations
 
+import asyncio
+import logging
+from datetime import datetime, timezone
+
 from app.cache.cache import match_analysis_cache, raw_dataset_cache
 from app.core.config import Settings, TeamStrengthWeights, get_settings, get_team_strength_weights
 from app.intelligence import historical_evidence_client
@@ -17,6 +21,34 @@ from app.intelligence.prediction_engine import PredictionEngine
 from app.providers.base import BaseFootballDataProvider
 from app.providers.models import MatchRawDataset
 from app.schemas.prediction import MatchPrediction
+
+_log = logging.getLogger("analysis_store")
+STORE_MAX_AGE_SECONDS = 6 * 3600  # kalıcı analiz önbelleği: sunucu uyusa/yeniden başlasa da kullanılır
+
+
+async def _store_load(key: str) -> MatchPrediction | None:
+    try:
+        import accuracy
+        rows = await accuracy._db("GET", "analysis_cache", params={"key": f"eq.{key}", "select": "payload,updated_at"})
+        if not rows:
+            return None
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(rows[0]["updated_at"].replace("Z", "+00:00"))).total_seconds()
+        if age > STORE_MAX_AGE_SECONDS:
+            return None
+        return MatchPrediction.model_validate(rows[0]["payload"])
+    except Exception as exc:  # noqa: BLE001
+        _log.debug("kalıcı analiz okunamadı: %s", exc)
+        return None
+
+
+async def _store_save(key: str, prediction: MatchPrediction) -> None:
+    try:
+        import accuracy
+        await accuracy._db("POST", "analysis_cache", params={"on_conflict": "key"}, prefer=True, json_body={
+            "key": key, "payload": prediction.model_dump(mode="json"),
+            "updated_at": datetime.now(timezone.utc).isoformat()})
+    except Exception as exc:  # noqa: BLE001
+        _log.debug("kalıcı analiz yazılamadı: %s", exc)
 
 
 class AnalysisService:
@@ -61,6 +93,14 @@ class AnalysisService:
             if cached is not None:
                 return cached
 
+        if not force_refresh:
+            stored = await _store_load(f"{self._provider.name}:{match_id}:full")
+            if stored is None and not include_evidence:
+                stored = await _store_load(f"{self._provider.name}:{match_id}:noev")
+            if stored is not None:
+                match_analysis_cache.set(cache_key, stored, self._settings.match_analysis_cache_ttl_seconds)
+                return stored
+
         dataset = await self.get_dataset(match_id, use_cache=not force_refresh)
         prediction = self._prediction_engine.analyze(dataset)
 
@@ -78,4 +118,6 @@ class AnalysisService:
         match_analysis_cache.set(
             cache_key, prediction, self._settings.match_analysis_cache_ttl_seconds
         )
+        asyncio.create_task(_store_save(
+            f"{self._provider.name}:{match_id}:{'full' if include_evidence else 'noev'}", prediction))
         return prediction
