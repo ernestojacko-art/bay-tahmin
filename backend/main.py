@@ -23,6 +23,18 @@ async def _start_picks_precompute() -> None:
     """Günlük kart sonuçlarını arka planda önceden hesaplar (kullanıcı beklemesin)."""
     import asyncio
     app.state.picks_precompute_task = asyncio.create_task(get_daily_picks_service().precompute_loop())
+
+    async def _warm_sportoto():
+        """Spor Toto bülten analizini sunucu açılınca hazırlar (kullanıcı ilk açışta beklemesin)."""
+        await asyncio.sleep(20)
+        try:
+            from app.services.sportoto_service import SportotoService
+            await SportotoService(get_analysis_service()).get_analysis()
+        except Exception as exc:  # noqa: BLE001
+            import logging
+            logging.getLogger("sportoto").warning("sportoto ön ısıtma başarısız: %s", exc)
+
+    app.state.sportoto_warm_task = asyncio.create_task(_warm_sportoto())
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
