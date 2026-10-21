@@ -35,6 +35,9 @@ async def _start_picks_precompute() -> None:
             logging.getLogger("sportoto").warning("sportoto ön ısıtma başarısız: %s", exc)
 
     app.state.sportoto_warm_task = asyncio.create_task(_warm_sportoto())
+
+    from app.services.warm_service import warm_loop
+    app.state.match_warm_task = asyncio.create_task(warm_loop(get_analysis_service()))
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

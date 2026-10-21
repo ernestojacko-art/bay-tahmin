@@ -94,9 +94,18 @@ class AnalysisService:
                 return cached
 
         if not force_refresh:
-            stored = await _store_load(f"{self._provider.name}:{match_id}:full")
-            if stored is None and not include_evidence:
-                stored = await _store_load(f"{self._provider.name}:{match_id}:noev")
+            base = f"{self._provider.name}:{match_id}"
+            stored = await _store_load(f"{base}:full")
+            if stored is None:
+                noev = await _store_load(f"{base}:noev")
+                if noev is not None:
+                    if include_evidence and historical_evidence_client.is_configured():
+                        try:
+                            noev.historical_evidence = await historical_evidence_client.fetch_historical_evidence(match_id)
+                        except Exception:
+                            pass
+                        asyncio.create_task(_store_save(f"{base}:full", noev))
+                    stored = noev
             if stored is not None:
                 match_analysis_cache.set(cache_key, stored, self._settings.match_analysis_cache_ttl_seconds)
                 return stored
