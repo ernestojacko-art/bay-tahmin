@@ -8,17 +8,37 @@ başarıda yavaşça tabana iner.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import os
 
 _BASE = float(os.getenv("FIVE_DOLLAR_MIN_INTERVAL_SECONDS", "5.5"))
 _state = {"interval": _BASE, "next": 0.0, "cooldown": 0.0, "ok": 0}
 _lock: asyncio.Lock | None = None
+# Arka plan işleri (önceden hesaplama, Spor Toto bülteni) bu bayrakla çalışır; kullanıcı
+# isteği (maç analizi tıklaması) bekliyorsa arka plan istekleri geri çekilir.
+background: contextvars.ContextVar[bool] = contextvars.ContextVar("api_gate_background", default=False)
+_fg_waiting = 0
 
 
 async def acquire() -> None:
-    global _lock
+    global _lock, _fg_waiting
     if _lock is None:
         _lock = asyncio.Lock()
+    if background.get():
+        while _fg_waiting > 0:
+            await asyncio.sleep(0.5)
+        fg = False
+    else:
+        fg = True
+        _fg_waiting += 1
+    try:
+        await _take()
+    finally:
+        if fg:
+            _fg_waiting -= 1
+
+
+async def _take() -> None:
     async with _lock:
         loop = asyncio.get_running_loop()
         wait = max(_state["next"], _state["cooldown"]) - loop.time()

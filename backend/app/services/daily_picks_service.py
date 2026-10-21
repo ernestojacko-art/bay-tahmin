@@ -382,6 +382,8 @@ class DailyPicksService:
 
     async def precompute_loop(self) -> None:
         """Sunucu ayaktayken bugünü ve yarını önceden hesaplar; kullanıcı beklemez."""
+        from app.core import api_gate
+        api_gate.background.set(True)
         await asyncio.sleep(3)
         while True:
             for offset in (0, 1):

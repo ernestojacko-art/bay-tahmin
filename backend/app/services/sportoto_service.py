@@ -40,7 +40,7 @@ TIERS: dict[str, dict[str, Any]] = {
                "note": "Geniş kapsam, yüksek maliyet: sürpriz ihtimali olan maçlar korunur."},
 }
 ANALYSIS_ROW = "analysis"
-STALE_SECONDS = 2 * 60 * 60
+STALE_SECONDS = 12 * 60 * 60
 
 _NOISE = {"fk", "fc", "sk", "as", "ac", "sc", "cf", "afc", "spor", "sportif", "faaliyetler", "kulubu", "futbol",
           "corendon", "tumosan", "caykur", "arca", "trendyol", "1907", "1903", "1905", "club", "de", "st", "saint"}
@@ -148,7 +148,7 @@ class SportotoService:
         days: set[date] = set()
         for m in matches:
             k = datetime.fromisoformat(m["kickoff"]).astimezone(ISTANBUL).date()
-            days.update({k - timedelta(days=1), k, k + timedelta(days=1)})
+            days.add(k)
         fixtures: list = []
         for day in sorted(days):
             try:
@@ -257,6 +257,8 @@ class SportotoService:
             return
 
         async def run():
+            from app.core import api_gate
+            api_gate.background.set(True)
             try:
                 data = await self.compute_analysis()
                 if data.get("status") == "ready":
