@@ -422,6 +422,48 @@ class ChatOrchestrator:
                   "ve piyasa olasılıklarıyla karşılaştırılmasından oluşur. Sonuç garantisi değildir."]
         return "\n".join(lines), [p.match_id for p in picks]
 
+    async def _sportoto_reply(self, message: str) -> str:
+        """Spor Toto: 'X TL'lik kupon yap' / 'ekonomik kupon' / genel bülten özeti."""
+        import os
+        from app.services.sportoto_service import DEFAULT_COLUMN_PRICE, SportotoService
+
+        service = SportotoService(self._analysis_service)
+        try:
+            price = float(os.getenv("SPORTOTO_COLUMN_PRICE", DEFAULT_COLUMN_PRICE))
+        except ValueError:
+            price = DEFAULT_COLUMN_PRICE
+        lowered = message.lower()
+        amount_match = re.search(r"(\d[\d.]*(?:,\d+)?)\s*(?:tl|₺|lira|türk lirası)", lowered)
+
+        def fmt(c: dict) -> str:
+            lines = [f"{c['label']} — {c['columns']} kolon, toplam {c['total_cost']:g} TL "
+                     f"(kolon {c['price_per_column']:g} TL), 15'i birden bilme olasılığı %{c['hit_all_probability']*100:.2f}"]
+            for r in c["picks"]:
+                lines.append(f"{r['n']}. {r['home']} - {r['away']}: {r['selection']}  ({r['reason']})")
+            return "\n".join(lines)
+
+        footer = ("\n\nNot: Kolon fiyatı {p:g} TL varsayıldı, resmî fiyatı kontrol edin. Bu bir analizdir, "
+                  "kazanç garantisi vermez. 18 yaş üstü ve sorumlu oynayın.").format(p=price)
+
+        if amount_match:
+            amount = float(amount_match.group(1).replace(".", "").replace(",", "."))
+            result = await service.budget_coupon(amount, price)
+            if result.get("status") != "ready":
+                return "Spor Toto bülteni analiz ediliyor, bir iki dakika sonra tekrar yazar mısın?"
+            return f"Spor Toto {amount:g} TL'lik kupon analizi:\n\n" + fmt(result) + footer
+
+        result = await service.coupons(price)
+        if result.get("status") != "ready":
+            return "Spor Toto bülteni analiz ediliyor, bir iki dakika sonra tekrar yazar mısın?"
+        coupons = result["coupons"]
+        for key, word in (("ekonomik", "ekonomik"), ("normal", "normal"), ("yuksek", "yüksek")):
+            if word in lowered or key in lowered:
+                return f"Spor Toto {result['season']} {result['week']}. hafta {coupons[key]['label']} kupon analizi:\n\n" + fmt(coupons[key]) + footer
+        parts = [f"Spor Toto {result['season']} {result['week']}. hafta kuponları (Ekonomik, Normal, Yüksek):"]
+        for c in coupons.values():
+            parts.append("\n" + fmt(c))
+        return "\n".join(parts) + "\n\nİstersen bütçeni yaz, örneğin \"500 TL'lik Spor Toto kuponu yap\" de." + footer
+
     async def _list_matches(self, message: str) -> str:
         """§5 TODAY_MATCHES/EVENING_MATCHES: sürpriz analizi gerektirmeyen düz fikstür listesi.
         LLM'in fikstür uydurmasını (§27) önlemek için bu da gerçek veriden üretilir."""
@@ -481,6 +523,19 @@ class ChatOrchestrator:
     async def handle_message(self, session_id: str, message: str, match_id: str | None) -> ChatResponse:
         context = self._context_store.get_or_create(session_id)
         context.add_turn("user", message, self._settings.chat_context_max_turns)
+
+        lowered_message = message.lower().replace("i̇", "i")
+        if "spor toto" in lowered_message or "sportoto" in lowered_message or "spor-toto" in lowered_message:
+            try:
+                reply = await self._sportoto_reply(message)
+            except Exception:
+                reply = "Spor Toto bülteni şu anda alınamadı. Birkaç dakika sonra tekrar dener misin?"
+            context.previous_intent = "sportoto"
+            context.add_turn("assistant", reply, self._settings.chat_context_max_turns)
+            return ChatResponse(
+                session_id=session_id, reply=reply, intent="match_analysis", match_id=None,
+                used_prediction_engine=True, grounded_in_analysis=True,
+            )
 
         if _looks_like_daily_surprise_request(message):
             try:
