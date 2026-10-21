@@ -39,6 +39,9 @@ IDEAL_MIN_PROBABILITY = 0.55
 # "İdeal" seçim gerçekten oynanabilir olmalı: oranı bu değerin altındaysa (ör. 1.12 favori ya da
 # onun "çifte şansı") hiçbir kullanıcı için anlamlı değildir; seçilmez.
 IDEAL_MIN_ODD = float(os.getenv("IDEAL_MIN_ODD", "1.40"))
+# Çifte şans yalnızca dengeli/yüksek oranlı maçlarda önerilir: çifte şansın iki sonucundan
+# EN DÜŞÜK oranlısı bile bu değerin üstündeyse (favori net değilse) seçilebilir.
+DC_MIN_SIDE_ODD = float(os.getenv("IDEAL_DC_MIN_SIDE_ODD", "2.00"))
 
 # A model-vs-market gap below this is normal noise, not a genuine surprise.
 SURPRISE_MIN_DIVERGENCE = 0.12
@@ -169,6 +172,11 @@ def ideal_candidate_for_match(prediction: MatchPrediction, dataset: MatchRawData
     playable = []
     for cand in candidates:
         odd = _ideal_odd(dataset, cand[1], cand[2], home, away)
+        if cand[1] == "Çifte Şans":
+            sides = [_market_price(dataset, "Maç Sonucu 1X2", k) for k in
+                     (("1", "X") if cand[2].endswith("(1X)") else ("X", "2") if cand[2].endswith("(X2)") else ("1", "2"))]
+            if not all(sides) or min(sides) < DC_MIN_SIDE_ODD:
+                continue
         if odd is not None and odd >= IDEAL_MIN_ODD:
             playable.append((cand, odd))
     if not playable:
