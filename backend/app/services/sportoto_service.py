@@ -29,7 +29,7 @@ logger = logging.getLogger("sportoto")
 ISTANBUL = ZoneInfo("Europe/Istanbul")
 
 OUTCOMES = ("1", "X", "2")
-DEFAULT_COLUMN_PRICE = 1.0  # Kolon fiyatı doğrulanmadı; arayüzden/parametreden değiştirilir.
+DEFAULT_COLUMN_PRICE = 10.0  # Kolon bedeli 10 TL (kullanıcı doğruladı).
 # Kupon türü -> en fazla kolon sayısı
 TIERS: dict[str, dict[str, Any]] = {
     "ekonomik": {"label": "Ekonomik", "max_columns": 12,

@@ -442,7 +442,7 @@ class ChatOrchestrator:
                 lines.append(f"{r['n']}. {r['home']} - {r['away']}: {r['selection']}  ({r['reason']})")
             return "\n".join(lines)
 
-        footer = ("\n\nNot: Kolon fiyatı {p:g} TL varsayıldı, resmî fiyatı kontrol edin. Bu bir analizdir, "
+        footer = ("\n\nNot: Kolon bedeli {p:g} TL. Bu bir analizdir, "
                   "kazanç garantisi vermez. 18 yaş üstü ve sorumlu oynayın.").format(p=price)
 
         if amount_match:
