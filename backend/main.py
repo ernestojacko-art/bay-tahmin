@@ -242,6 +242,56 @@ async def picks_iyms_surprise(date: str | None = Query(default=None)):
     return result.model_dump(mode="json")
 
 
+import os as _os
+
+from app.services.sportoto_service import DEFAULT_COLUMN_PRICE, SportotoService
+
+
+def _sportoto() -> SportotoService:
+    return SportotoService(get_analysis_service())
+
+
+def _column_price(price: float | None) -> float:
+    if price and price > 0:
+        return price
+    try:
+        return float(_os.getenv("SPORTOTO_COLUMN_PRICE", DEFAULT_COLUMN_PRICE))
+    except ValueError:
+        return DEFAULT_COLUMN_PRICE
+
+
+@app.get("/sportoto/analysis", tags=["sportoto"])
+async def sportoto_analysis():
+    """Haftalık bülten (15 maç) + her maçın 1/X/2 analizi. Hazır değilse status='preparing'."""
+    return await _sportoto().get_analysis()
+
+
+@app.get("/sportoto/coupons", tags=["sportoto"])
+async def sportoto_coupons(price: float | None = Query(default=None)):
+    result = await _sportoto().coupons(_column_price(price))
+    result["default_price"] = _column_price(None)
+    return result
+
+
+@app.get("/sportoto/budget", tags=["sportoto"])
+async def sportoto_budget(amount: float = Query(..., gt=0, le=1_000_000), price: float | None = Query(default=None)):
+    return await _sportoto().budget_coupon(amount, _column_price(price))
+
+
+@app.post("/sportoto/bulletin", tags=["sportoto"])
+async def sportoto_set_bulletin(request: Request):
+    """Haftalık bülteni günceller. SPORTOTO_ADMIN_TOKEN ortam değişkeni tanımlı olmalı; X-Admin-Token ile gönderilir."""
+    token = _os.getenv("SPORTOTO_ADMIN_TOKEN")
+    if not token or request.headers.get("x-admin-token") != token:
+        raise HTTPException(status_code=403, detail="Yetkisiz.")
+    body = await request.json()
+    matches = body.get("matches") or []
+    if len(matches) != 15 or not all({"n", "home", "away", "kickoff"} <= set(m) for m in matches):
+        raise HTTPException(status_code=400, detail="15 maç gerekli: n, home, away, kickoff (ISO, +03:00).")
+    await SportotoService.save_bulletin(str(body.get("season") or ""), str(body.get("week") or ""), matches)
+    return {"ok": True}
+
+
 @app.get("/admin/cache/status", tags=["admin"])
 async def admin_cache_status():
     now = datetime.now(ISTANBUL).date()
