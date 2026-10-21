@@ -26,6 +26,8 @@ estimated.
 """
 from __future__ import annotations
 
+import os
+
 from app.providers.models import MatchRawDataset, OddsMarket
 from app.schemas.common import DataQuality, RiskLevel
 from app.schemas.picks import PickCandidate
@@ -34,6 +36,9 @@ from app.schemas.prediction import MatchPrediction
 # Below this, a pick is not "ideal" (safe) -- it has no real statistical
 # backing to be presented as a low-risk choice.
 IDEAL_MIN_PROBABILITY = 0.55
+# "İdeal" seçim gerçekten oynanabilir olmalı: oranı bu değerin altındaysa (ör. 1.12 favori ya da
+# onun "çifte şansı") hiçbir kullanıcı için anlamlı değildir; seçilmez.
+IDEAL_MIN_ODD = float(os.getenv("IDEAL_MIN_ODD", "1.40"))
 
 # A model-vs-market gap below this is normal noise, not a genuine surprise.
 SURPRISE_MIN_DIVERGENCE = 0.12
@@ -80,6 +85,35 @@ def _risk_for_probability(probability: float) -> RiskLevel:
     if probability >= 0.48:
         return RiskLevel.MEDIUM
     return RiskLevel.HIGH
+
+
+def _market_price(dataset: MatchRawDataset, name_part: str, label: str) -> float | None:
+    for m in dataset.odds_markets:
+        if name_part in (m.market_name or ""):
+            for sel in m.selections:
+                if sel.label == label and sel.price and sel.price > 1.0:
+                    return float(sel.price)
+    return None
+
+
+def _ideal_odd(dataset: MatchRawDataset, market: str, selection: str, home: str, away: str) -> float | None:
+    """Seçimin gerçek bahis oranı; çifte şans oranı 1X2 oranlarından türetilir. Yoksa None."""
+    p1 = _market_price(dataset, "Maç Sonucu 1X2", "1")
+    px = _market_price(dataset, "Maç Sonucu 1X2", "X")
+    p2 = _market_price(dataset, "Maç Sonucu 1X2", "2")
+    if market.startswith("Maç Sonucu"):
+        label = "X" if selection == "Beraberlik" else "1" if selection == home else "2"
+        return {"1": p1, "X": px, "2": p2}[label]
+    if market == "Çifte Şans":
+        if not (p1 and px and p2):
+            return None
+        pair = (p1, px) if selection.endswith("(1X)") else (px, p2) if selection.endswith("(X2)") else (p1, p2)
+        return round(1.0 / (1.0 / pair[0] + 1.0 / pair[1]), 2)
+    if market == "Alt/Üst Gol":
+        return _market_price(dataset, "Alt/Üst Gol (", selection)
+    if market.startswith("Karşılıklı Gol"):
+        return _market_price(dataset, "Karşılıklı Gol", selection)
+    return None
 
 
 def ideal_candidate_for_match(prediction: MatchPrediction, dataset: MatchRawDataset) -> PickCandidate | None:
@@ -131,13 +165,21 @@ def ideal_candidate_for_match(prediction: MatchPrediction, dataset: MatchRawData
     else:
         candidates.append((1 - btts, "Karşılıklı Gol (KG)", "Yok", None))
 
-    best_prob, best_market, best_selection, best_market_prob = max(candidates, key=lambda item: item[0])
+    # Oranı gerçekten oynanabilir (>= IDEAL_MIN_ODD) olmayan seçenekler elenir.
+    playable = []
+    for cand in candidates:
+        odd = _ideal_odd(dataset, cand[1], cand[2], home, away)
+        if odd is not None and odd >= IDEAL_MIN_ODD:
+            playable.append((cand, odd))
+    if not playable:
+        return None
+    (best_prob, best_market, best_selection, best_market_prob), best_odd = max(playable, key=lambda item: item[0][0])
     if best_prob < IDEAL_MIN_PROBABILITY:
         return None
 
     divergence = round(best_prob - best_market_prob, 4) if best_market_prob is not None else None
     rationale = (
-        f"Model bu seçime %{best_prob*100:.1f} olasılık veriyor "
+        f"Model bu seçime %{best_prob*100:.1f} olasılık veriyor, oran {best_odd:.2f} "
         f"(güven: %{prediction.confidence.confidence*100:.1f}, veri kalitesi: {prediction.data_quality.value}). "
         + (prediction.analysis_rationale or "")
     ).strip()
