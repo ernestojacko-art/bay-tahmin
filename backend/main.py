@@ -38,6 +38,9 @@ async def _start_picks_precompute() -> None:
 
     from app.services.warm_service import warm_loop
     app.state.match_warm_task = asyncio.create_task(warm_loop(get_analysis_service()))
+
+    from app.services import model_log
+    app.state.model_log_task = asyncio.create_task(model_log.loop(get_analysis_service()))
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -331,6 +334,14 @@ async def admin_cache_status():
         },
         "provider": "5dollarfootballapi",
     }
+
+
+@app.get("/admin/model-report", tags=["admin"])
+async def admin_model_report():
+    """Model başarısı: olasılık kalitesi, piyasa ile karşılaştırma, kalibrasyon (model_log tablosundan)."""
+    from app.services import model_log
+
+    return await model_log.report()
 
 
 @app.get("/admin/accuracy", tags=["admin"])

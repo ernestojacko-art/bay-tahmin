@@ -112,6 +112,10 @@ class AnalysisService:
 
         dataset = await self.get_dataset(match_id, use_cache=not force_refresh)
         prediction = self._prediction_engine.analyze(dataset)
+        from app.services import model_log
+        asyncio.create_task(model_log.log_prediction(
+            prediction, dataset,
+            source="live" if dataset.fixture.kickoff > datetime.now(timezone.utc) else "backtest"))
 
         # Sürpriz Veri (ayrı, bağımsız tarihsel kanıt motoru) yapılandırılmışsa
         # sonucunu ekler. Yapılandırılmamışsa veya erişilemezse bu adım
