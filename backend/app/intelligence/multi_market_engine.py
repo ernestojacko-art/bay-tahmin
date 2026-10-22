@@ -35,13 +35,13 @@ from app.schemas.prediction import MatchPrediction
 
 # Below this, a pick is not "ideal" (safe) -- it has no real statistical
 # backing to be presented as a low-risk choice.
-IDEAL_MIN_PROBABILITY = 0.55
+IDEAL_MIN_PROBABILITY = float(os.getenv("IDEAL_MIN_PROBABILITY", "0.60"))
 # "İdeal" seçim gerçekten oynanabilir olmalı: oranı bu değerin altındaysa (ör. 1.12 favori ya da
 # onun "çifte şansı") hiçbir kullanıcı için anlamlı değildir; seçilmez.
 # Gerçek sonuçlarla ölçüm (model_log, ~150 maç): modelin en yüksek 1X2 olasılığı %45'in altındaysa isabet
 # %17 (net favori yok); "Alt 2.5" ve "KG Yok" tahminleri ise vaat ettiklerinden çok daha az tutuyor.
 # Bu yüzden: zayıf favoride 1X2 önerilmez, Alt/KG-Yok olasılıkları yarıya doğru çekilir (kalibrasyon).
-IDEAL_MIN_FAVORITE_PROB = float(os.getenv("IDEAL_MIN_FAVORITE_PROB", "0.45"))
+IDEAL_MIN_FAVORITE_PROB = float(os.getenv("IDEAL_MIN_FAVORITE_PROB", "0.60"))
 UNDER_BTTSNO_SHRINK = float(os.getenv("UNDER_BTTSNO_SHRINK", "0.5"))
 IDEAL_MIN_ODD = float(os.getenv("IDEAL_MIN_ODD", "1.40"))
 # Çifte şans yalnızca oranı bu değer ve üstündeyse önerilir (düşük oranlı çifte şans anlamsızdır).
