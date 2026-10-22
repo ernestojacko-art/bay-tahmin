@@ -16,7 +16,7 @@ from app.core import api_gate
 logger = logging.getLogger("model_log")
 ISTANBUL = ZoneInfo("Europe/Istanbul")
 BACKTEST_DAYS = 10          # kaç gün geriye gidilir
-BACKTEST_PER_CYCLE = 120    # bir turda en fazla bu kadar maç (hız sınırı: ~3 istek/maç)
+BACKTEST_PER_CYCLE = 40     # bir turda en fazla bu kadar maç (hız sınırı: ~3 istek/maç)
 CYCLE_SECONDS = 30 * 60
 
 
@@ -107,18 +107,30 @@ async def backtest_cycle(analysis_service) -> int:
     return done
 
 
+async def resolve_loop(analysis_service) -> None:
+    """Sonuç işleme, uzun süren backtest turlarına takılmasın diye ayrı döngüde çalışır."""
+    api_gate.background.set(True)
+    await asyncio.sleep(60)
+    while True:
+        try:
+            r = await resolve_results(analysis_service._provider)
+            logger.info("model_log: %d sonuç işlendi", r)
+            try:  # kartların (prediction_tracking) tuttu/tutmadı sonuçları otomatik işlenir
+                await accuracy.resolve_pending(30)
+            except Exception as exc:  # noqa: BLE001
+                logger.info("kart sonuçları işlenemedi: %s", exc)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("model_log sonuç döngüsü hatası: %s", exc)
+        await asyncio.sleep(20 * 60)
+
+
 async def loop(analysis_service) -> None:
     api_gate.background.set(True)
     await asyncio.sleep(120)
     while True:
         try:
             n = await backtest_cycle(analysis_service)
-            r = await resolve_results(analysis_service._provider)
-            try:  # kartların (prediction_tracking) tuttu/tutmadı sonuçları otomatik işlenir
-                await accuracy.resolve_pending(30)
-            except Exception as exc:  # noqa: BLE001
-                logger.info("kart sonuçları işlenemedi: %s", exc)
-            logger.info("model_log: %d backtest kaydı, %d sonuç işlendi", n, r)
+            logger.info("model_log: %d backtest kaydı", n)
         except Exception as exc:  # noqa: BLE001
             logger.warning("model_log döngü hatası: %s", exc)
         await asyncio.sleep(CYCLE_SECONDS)
