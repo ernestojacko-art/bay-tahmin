@@ -29,7 +29,7 @@ def _price(dataset, label: str):
     return None
 
 
-async def log_prediction(prediction, dataset, source: str = "live") -> None:
+async def log_prediction(prediction, dataset, source: str = "live", result: tuple | None = None) -> None:
     """Best-effort: hata fırlatmaz."""
     try:
         fx = dataset.fixture
@@ -45,6 +45,8 @@ async def log_prediction(prediction, dataset, source: str = "live") -> None:
             "p_over25": main.over if main else None, "p_btts": prediction.btts_yes_probability,
             "confidence": prediction.confidence.confidence,
         }
+        if result is not None:
+            row.update({"goals_home": result[0], "goals_away": result[1], "resolved_at": datetime.now(timezone.utc).isoformat()})
         await accuracy._db("POST", "model_log", params={"on_conflict": "match_id"}, prefer=True, json_body=row)
     except Exception as exc:  # noqa: BLE001
         logger.debug("model_log yazılamadı: %s", exc)
@@ -55,14 +57,30 @@ async def _logged_ids(since_iso: str) -> set[str]:
     return {r["match_id"] for r in rows or []}
 
 
-async def resolve_results(provider, limit: int = 40) -> int:
+async def resolve_results(provider, limit: int = 150) -> int:
     """Bitmiş ama skoru işlenmemiş kayıtların skorunu sağlayıcıdan alır."""
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
     rows = await accuracy._db("GET", "model_log", params={
         "select": "match_id", "resolved_at": "is.null", "kickoff": f"lt.{cutoff}", "order": "kickoff.asc", "limit": str(limit)})
     done = 0
+    # Gün fikstürü tek seferde tüm skorları getirir (maç başına istekten çok daha ucuz).
+    if rows:
+        kick = await accuracy._db("GET", "model_log", params={
+            "select": "kickoff", "resolved_at": "is.null", "kickoff": f"lt.{cutoff}", "order": "kickoff.asc", "limit": str(limit)})
+        days = sorted({datetime.fromisoformat(k["kickoff"].replace("Z", "+00:00")).astimezone(ISTANBUL).date() for k in kick or []})
+        for day in days[:4]:
+            try:
+                await provider.get_fixtures(day)
+            except Exception as exc:  # noqa: BLE001
+                logger.info("sonuç için %s fikstürü alınamadı: %s", day, exc)
     for r in rows or []:
         try:
+            cached = getattr(provider, "result_cache", {}).get(r["match_id"])
+            if cached is not None:
+                await accuracy._db("PATCH", "model_log", params={"match_id": f"eq.{r['match_id']}"}, json_body={
+                    "goals_home": cached[0], "goals_away": cached[1], "resolved_at": datetime.now(timezone.utc).isoformat()})
+                done += 1
+                continue
             payload = await provider._request(f"fixtures/{r['match_id']}", {"lang": "en"})
             raw = (payload or {}).get("data") or {}
             g = raw.get("goals") or {}
@@ -99,7 +117,7 @@ async def backtest_cycle(analysis_service) -> int:
             try:
                 dataset = await analysis_service.get_dataset(f.match_id)
                 prediction = analysis_service._prediction_engine.analyze(dataset)
-                await log_prediction(prediction, dataset, source="backtest")
+                await log_prediction(prediction, dataset, source="backtest", result=getattr(provider, "result_cache", {}).get(f.match_id))
                 logged.add(f.match_id)
                 done += 1
             except Exception as exc:  # noqa: BLE001

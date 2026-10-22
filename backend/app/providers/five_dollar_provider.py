@@ -220,6 +220,9 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
         for raw in rows:
             if league_id and str((raw.get("league") or {}).get("id")) != str(league_id): continue
             f = self._fixture(raw); self._fixture_cache[f.match_id] = f; out.append(f)
+            g = raw.get("goals") or {}
+            if str(raw.get("status") or "").lower() in {"finished", "ft", "aet", "pen"} and g.get("home") is not None and g.get("away") is not None:
+                self.__dict__.setdefault("result_cache", {})[f.match_id] = (int(g["home"]), int(g["away"]))
             if with_odds and self._has_open_1x2(raw):
                 self.open_odds_match_ids.add(f.match_id)
                 if self._has_open_1x2(raw, "1x2_half"):
