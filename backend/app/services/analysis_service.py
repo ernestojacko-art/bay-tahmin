@@ -26,7 +26,7 @@ _log = logging.getLogger("analysis_store")
 STORE_MAX_AGE_SECONDS = 6 * 3600  # kalıcı analiz önbelleği: sunucu uyusa/yeniden başlasa da kullanılır
 
 
-async def _store_load(key: str) -> MatchPrediction | None:
+async def _store_load(key: str, model=MatchPrediction):
     try:
         import accuracy
         rows = await accuracy._db("GET", "analysis_cache", params={"key": f"eq.{key}", "select": "payload,updated_at"})
@@ -35,13 +35,13 @@ async def _store_load(key: str) -> MatchPrediction | None:
         age = (datetime.now(timezone.utc) - datetime.fromisoformat(rows[0]["updated_at"].replace("Z", "+00:00"))).total_seconds()
         if age > STORE_MAX_AGE_SECONDS:
             return None
-        return MatchPrediction.model_validate(rows[0]["payload"])
+        return model.model_validate(rows[0]["payload"])
     except Exception as exc:  # noqa: BLE001
         _log.debug("kalıcı analiz okunamadı: %s", exc)
         return None
 
 
-async def _store_save(key: str, prediction: MatchPrediction) -> None:
+async def _store_save(key: str, prediction) -> None:
     try:
         import accuracy
         await accuracy._db("POST", "analysis_cache", params={"on_conflict": "key"}, prefer=True, json_body={
@@ -73,8 +73,15 @@ class AnalysisService:
             cached = raw_dataset_cache.get(cache_key)
             if cached is not None:
                 return cached
+        store_key = f"{self._provider.name}:{match_id}:dataset"
+        if use_cache:
+            stored = await _store_load(store_key, MatchRawDataset)
+            if stored is not None:
+                raw_dataset_cache.set(cache_key, stored, self._settings.cache_default_ttl_seconds)
+                return stored
         dataset = await self._data_layer.build_match_dataset(match_id)
         raw_dataset_cache.set(cache_key, dataset, self._settings.cache_default_ttl_seconds)
+        asyncio.create_task(_store_save(store_key, dataset))
         return dataset
 
     async def analyze_match(

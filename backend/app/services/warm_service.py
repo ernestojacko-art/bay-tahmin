@@ -46,11 +46,11 @@ async def warm_loop(analysis_service) -> None:
                 now = datetime.now(timezone.utc)
                 todo = [f for f in fixtures
                         if f.kickoff > now and f.match_id in getattr(provider, "open_odds_match_ids", set())
-                        and f"{provider.name}:{f.match_id}:noev" not in fresh
-                        and f"{provider.name}:{f.match_id}:full" not in fresh]
+                        and f"{provider.name}:{f.match_id}:dataset" not in fresh]
                 todo.sort(key=lambda f: f.kickoff)
                 for f in todo:
                     try:
+                        await analysis_service.get_dataset(f.match_id)
                         await analysis_service.analyze_match(f.match_id, include_evidence=False)
                         done += 1
                     except Exception as exc:  # noqa: BLE001
