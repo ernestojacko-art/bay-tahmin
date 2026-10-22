@@ -31,6 +31,8 @@ class PickCandidate(BaseModel):
     selection: str
 
     model_probability: float
+    # Seçimin bahis oranı (biliniyorsa); kayıt ve başarı takibi için saklanır.
+    odd: Optional[float] = None
     market_probability: Optional[float] = None
     # model_probability - market_probability, when a market exists for this
     # exact selection. Positive = model more confident than the market.

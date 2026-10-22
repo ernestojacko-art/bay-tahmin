@@ -465,7 +465,7 @@ class DailyPicksService:
                     "match_id": pick.match_id, "kickoff": pick.kickoff.isoformat(),
                     "competition": pick.league_name, "home_team": pick.home_team, "away_team": pick.away_team,
                     "market_type": market_type, "selection": pick.selection,
-                    "market_probability": pick.confidence,
+                    "market_probability": pick.confidence, "odd": pick.odd,
                 })
             except Exception:
                 pass

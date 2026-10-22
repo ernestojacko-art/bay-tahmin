@@ -199,7 +199,7 @@ def ideal_candidate_for_match(prediction: MatchPrediction, dataset: MatchRawData
         match_id=fixture.match_id, home_team=home, away_team=away,
         league_name=fixture.league_name, kickoff=fixture.kickoff,
         market=best_market, selection=best_selection,
-        model_probability=round(best_prob, 4), market_probability=best_market_prob, divergence=divergence,
+        model_probability=round(best_prob, 4), odd=round(best_odd, 2), market_probability=best_market_prob, divergence=divergence,
         confidence=prediction.confidence.confidence, risk=_risk_for_probability(best_prob),
         data_quality=prediction.data_quality, rationale=rationale,
     )

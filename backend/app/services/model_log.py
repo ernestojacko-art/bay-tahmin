@@ -114,6 +114,10 @@ async def loop(analysis_service) -> None:
         try:
             n = await backtest_cycle(analysis_service)
             r = await resolve_results(analysis_service._provider)
+            try:  # kartların (prediction_tracking) tuttu/tutmadı sonuçları otomatik işlenir
+                await accuracy.resolve_pending(30)
+            except Exception as exc:  # noqa: BLE001
+                logger.info("kart sonuçları işlenemedi: %s", exc)
             logger.info("model_log: %d backtest kaydı, %d sonuç işlendi", n, r)
         except Exception as exc:  # noqa: BLE001
             logger.warning("model_log döngü hatası: %s", exc)
