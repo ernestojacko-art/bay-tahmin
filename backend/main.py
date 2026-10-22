@@ -42,6 +42,9 @@ async def _start_picks_precompute() -> None:
     from app.services import model_log
     app.state.model_log_task = asyncio.create_task(model_log.loop(get_analysis_service()))
     app.state.model_resolve_task = asyncio.create_task(model_log.resolve_loop(get_analysis_service()))
+
+    from app.services import history_collector
+    app.state.history_task = asyncio.create_task(history_collector.loop(get_analysis_service()))
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
