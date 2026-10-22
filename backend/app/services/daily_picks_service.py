@@ -69,7 +69,7 @@ IYMS_MIN_SWING_PROBABILITY = float(os.getenv("IYMS_MIN_SWING_PROBABILITY", "0.02
 # deploy / uyku sonrası da kaybolmaz); bayatlamışsa eski sonuç gösterilirken arka planda yenilenir.
 SNAPSHOT_LIMITS = tuple(range(1, 13))
 # Bu andan ÖNCE yazılmış snapshot'lar eski seçim kurallarıyla üretildi (ör. düşük oranlı çifte şans); yok sayılır.
-SNAPSHOT_MIN_UPDATED = datetime(2026, 10, 22, 4, 40, tzinfo=timezone.utc)
+SNAPSHOT_MIN_UPDATED = datetime(2026, 10, 22, 23, 0, tzinfo=timezone.utc)
 SNAPSHOT_REFRESH_SECONDS = int(os.getenv("DAILY_PICKS_SNAPSHOT_REFRESH_MINUTES", "90")) * 60
 PRECOMPUTE_INTERVAL_SECONDS = int(os.getenv("DAILY_PICKS_PRECOMPUTE_MINUTES", "20")) * 60
 _CATEGORIES = ("ideal", "surprise", "iyms_surprise")
@@ -233,6 +233,11 @@ class DailyPicksService:
         pool = _Pool(analyzed=[], total_fixtures=0, selected=0, truncated=True)
         _pool_live[key] = pool
         try:
+            from app.services import model_log
+            try:
+                await model_log.refresh_hit_table()
+            except Exception as exc:
+                logger.warning("daily_picks: tutturma tablosu yüklenemedi: %s", exc)
             fixtures, total = await self._future_fixtures(target)
             pool.total_fixtures, pool.selected = total, len(fixtures)
             await self._analyze_all(fixtures, pool)

@@ -29,19 +29,20 @@ from __future__ import annotations
 import os
 
 from app.providers.models import MatchRawDataset, OddsMarket
+from app.intelligence import hit_gate
 from app.schemas.common import DataQuality, RiskLevel
 from app.schemas.picks import PickCandidate
 from app.schemas.prediction import MatchPrediction
 
 # Below this, a pick is not "ideal" (safe) -- it has no real statistical
 # backing to be presented as a low-risk choice.
-IDEAL_MIN_PROBABILITY = float(os.getenv("IDEAL_MIN_PROBABILITY", "0.60"))
+IDEAL_MIN_PROBABILITY = float(os.getenv("IDEAL_MIN_PROBABILITY", "0.55"))
 # "İdeal" seçim gerçekten oynanabilir olmalı: oranı bu değerin altındaysa (ör. 1.12 favori ya da
 # onun "çifte şansı") hiçbir kullanıcı için anlamlı değildir; seçilmez.
 # Gerçek sonuçlarla ölçüm (model_log, ~150 maç): modelin en yüksek 1X2 olasılığı %45'in altındaysa isabet
 # %17 (net favori yok); "Alt 2.5" ve "KG Yok" tahminleri ise vaat ettiklerinden çok daha az tutuyor.
 # Bu yüzden: zayıf favoride 1X2 önerilmez, Alt/KG-Yok olasılıkları yarıya doğru çekilir (kalibrasyon).
-IDEAL_MIN_FAVORITE_PROB = float(os.getenv("IDEAL_MIN_FAVORITE_PROB", "0.60"))
+IDEAL_MIN_FAVORITE_PROB = float(os.getenv("IDEAL_MIN_FAVORITE_PROB", "0.45"))
 UNDER_BTTSNO_SHRINK = float(os.getenv("UNDER_BTTSNO_SHRINK", "0.5"))
 IDEAL_MIN_ODD = float(os.getenv("IDEAL_MIN_ODD", "1.40"))
 # Çifte şans yalnızca oranı bu değer ve üstündeyse önerilir (düşük oranlı çifte şans anlamsızdır).
@@ -95,6 +96,16 @@ def _risk_for_probability(probability: float) -> RiskLevel:
     if probability >= 0.48:
         return RiskLevel.MEDIUM
     return RiskLevel.HIGH
+
+
+def _gate_kind(market: str, selection: str) -> str:
+    if market.startswith("Maç Sonucu"):
+        return "1x2"
+    if market == "Çifte Şans":
+        return "dc"
+    if market == "Alt/Üst Gol":
+        return "over" if selection.startswith("Üst") else "under"
+    return "btts_yes" if selection == "Var" else "btts_no"
 
 
 def _market_price(dataset: MatchRawDataset, name_part: str, label: str) -> float | None:
@@ -168,17 +179,20 @@ def ideal_candidate_for_match(prediction: MatchPrediction, dataset: MatchRawData
         if main_ou.over >= main_ou.under:
             candidates.append((main_ou.over, "Alt/Üst Gol", "Üst 2.5", None))
         else:
-            candidates.append((0.5 + UNDER_BTTSNO_SHRINK * (main_ou.under - 0.5), "Alt/Üst Gol", "Alt 2.5", None))
+            candidates.append((main_ou.under, "Alt/Üst Gol", "Alt 2.5", None))
 
     btts = prediction.btts_yes_probability
     if btts >= 1 - btts:
         candidates.append((btts, "Karşılıklı Gol (KG)", "Var", None))
     else:
-        candidates.append((0.5 + UNDER_BTTSNO_SHRINK * ((1 - btts) - 0.5), "Karşılıklı Gol (KG)", "Yok", None))
+        candidates.append((1 - btts, "Karşılıklı Gol (KG)", "Yok", None))
 
     # Oranı gerçekten oynanabilir (>= IDEAL_MIN_ODD) olmayan seçenekler elenir.
     playable = []
     for cand in candidates:
+        # Ölçülmüş tutturma oranı kapısı: bu tür + olasılık bandı gerçekte yeterince tutmuyorsa elenir.
+        if not hit_gate.ok(_gate_kind(cand[1], cand[2]), cand[0]):
+            continue
         odd = _ideal_odd(dataset, cand[1], cand[2], home, away)
         if cand[1] == "Çifte Şans":
             sides = [_market_price(dataset, "Maç Sonucu 1X2", k) for k in

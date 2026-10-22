@@ -344,7 +344,10 @@ async def admin_model_report():
     """Model başarısı: olasılık kalitesi, piyasa ile karşılaştırma, kalibrasyon (model_log tablosundan)."""
     from app.services import model_log
 
-    return await model_log.report()
+    from app.intelligence import hit_gate
+
+    await model_log.refresh_hit_table(force=True)
+    return {**(await model_log.report()), "hit_gate": {"min_hit": hit_gate.MIN_HIT, "min_samples": hit_gate.MIN_SAMPLES, "bands": hit_gate.table_snapshot()}}
 
 
 @app.get("/admin/accuracy", tags=["admin"])
