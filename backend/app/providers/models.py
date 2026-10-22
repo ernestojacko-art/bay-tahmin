@@ -34,6 +34,9 @@ class RecentMatch(BaseModel):
     opponent: TeamRef
     goals_for: int
     goals_against: int
+    # Maçın gerçek ev sahibi / deplasman adları (H2H listesinde olduğu gibi gösterilir).
+    home_name: Optional[str] = None
+    away_name: Optional[str] = None
     xg_for: Optional[float] = None
     xg_against: Optional[float] = None
     shots_for: Optional[int] = None

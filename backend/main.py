@@ -83,6 +83,8 @@ def _recent_match_json(m):
         "goals_for": m.goals_for,
         "goals_against": m.goals_against,
         "result": m.result.value if hasattr(m.result, "value") else str(m.result),
+        "home_name": getattr(m, "home_name", None),
+        "away_name": getattr(m, "away_name", None),
     }
 
 

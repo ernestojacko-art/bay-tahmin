@@ -344,7 +344,15 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
             t=r.get("teams") or {}; h=t.get("home") or {}; a=t.get("away") or {}
             if {str(h.get("id")),str(a.get("id"))}!={str(team_a_id),str(team_b_id)}: continue
             seen[str(r.get("id"))]=r
-        out=[m for m in (self._recent(r,team_a_id) for r in seen.values()) if m is not None and m.date<fixture.kickoff.date()]
+        out=[]
+        for r in seen.values():
+            m=self._recent(r,team_a_id)
+            if m is None or m.date>=fixture.kickoff.date(): continue
+            t=r.get("teams") or {}
+            m.home_name=str((t.get("home") or {}).get("name") or "") or None
+            m.away_name=str((t.get("away") or {}).get("name") or "") or None
+            if m.home_name and m.home_name == m.away_name: continue  # aynı adlı iki kayıt: güvenilmez satır
+            out.append(m)
         out.sort(key=lambda x:x.date,reverse=True)
         return H2HRecord(matches=out[:limit]) if out else None
 
