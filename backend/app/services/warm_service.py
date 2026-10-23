@@ -48,6 +48,12 @@ async def warm_loop(analysis_service) -> None:
                         if f.kickoff > now and f.match_id in getattr(provider, "open_odds_match_ids", set())
                         and f"{provider.name}:{f.match_id}:dataset" not in fresh]
                 todo.sort(key=lambda f: f.kickoff)
+                from app.services import season_service
+                for lid in dict.fromkeys(f.league_id for f in todo):
+                    try:
+                        await season_service.get_season(provider, lid, wait=None, bg=True)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.info("warm: sezon verisi alınamadı (%s): %s", lid, exc)
                 for f in todo:
                     try:
                         await analysis_service.get_dataset(f.match_id)

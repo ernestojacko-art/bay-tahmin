@@ -329,6 +329,13 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
             congestion=FixtureCongestion(matches_last_14_days=sum(1 for m in recent if 0 <= (target-m.date).days <= 14),days_since_last_match=max(0,(target-recent[0].date).days),next_match_days_away=None)
         return TeamRawDataset(team=team,recent_matches=recent[:20],recent_matches_home=home[:20],recent_matches_away=away[:20],standing=standing,fixture_congestion=congestion)
 
+    async def fetch_league_finished(self, league_id: str) -> list[dict[str, Any]]:
+        """Liginin son ~400 günlük bitmiş maçları (en yeniden eskiye, en fazla 10 sayfa)."""
+        tz=ZoneInfo("Europe/Istanbul"); today=datetime.now(tz).date()
+        start=datetime.combine(today-timedelta(days=400),datetime.min.time(),tzinfo=tz).astimezone(timezone.utc)
+        end=datetime.combine(today+timedelta(days=1),datetime.min.time(),tzinfo=tz).astimezone(timezone.utc)
+        return await self._all_pages(f"leagues/{league_id}/fixtures",{"start_time":int(start.timestamp()),"end_time":int(end.timestamp()),"status":"finished","order":"desc","lang":"en","per_page":100},max_pages=10)
+
     async def get_standings(self, league_id: str) -> list[StandingsEntry]:
         rows=await self._league_rows(league_id,datetime.now(ZoneInfo("Europe/Istanbul")).date()); teams={}
         for r in rows:
@@ -342,6 +349,26 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
         if not fixture: return None
         rows=await self._league_rows(fixture.league_id,fixture.kickoff.date())
         pool=self._finished(rows)+self._finished(await self._team_rows_for(team_a_id))+self._finished(await self._team_rows_for(team_b_id))
+        def _count(pool_rows):
+            ids={}
+            for r in pool_rows:
+                t=r.get("teams") or {}; h=t.get("home") or {}; a=t.get("away") or {}
+                if {str(h.get("id")),str(a.get("id"))}=={str(team_a_id),str(team_b_id)}: ids[str(r.get("id"))]=r
+            return ids
+        if len(_count(pool))<6:
+            extra=self.__dict__.setdefault("_team_more_cache",{})
+            for tid in (str(team_a_id),str(team_b_id)):
+                if len(_count(pool))>=6: break
+                if tid not in extra:
+                    rows_more=[]
+                    for page in (2,3):
+                        try:
+                            payload=await self._request(f"teams/{tid}/fixtures",{"status":"finished","order":"desc","lang":"en","per_page":50,"page":page})
+                            rows_more+=[x for x in (payload.get("data") or []) if isinstance(x,dict)]
+                        except Exception:
+                            break
+                    extra[tid]=rows_more
+                pool=pool+self._finished(extra[tid])
         seen={}; 
         for r in pool:
             t=r.get("teams") or {}; h=t.get("home") or {}; a=t.get("away") or {}

@@ -119,7 +119,7 @@ def _market_json(m):
     }
 
 
-def _legacy_analysis_contract(prediction, dataset=None):
+def _legacy_analysis_contract(prediction, dataset=None, season=None):
     """Expose Cloud Engine output both in its native shape and legacy-friendly fields."""
     data = prediction.model_dump(mode="json")
     top_scores = sorted(data.get("score_matrix") or [], key=lambda item: item.get("probability", 0), reverse=True)[:5]
@@ -132,6 +132,7 @@ def _legacy_analysis_contract(prediction, dataset=None):
             "home_team": _team_context_json(dataset.home_team_data),
             "away_team": _team_context_json(dataset.away_team_data),
             "h2h": [_recent_match_json(m) for m in (dataset.h2h.matches[:10] if dataset.h2h else [])],
+            "season": season,
             "odds_markets": [_market_json(m) for m in dataset.odds_markets],
         }
 
@@ -187,7 +188,19 @@ async def legacy_ai_analyze(match_id: int):
         dataset = await service.get_dataset(str(match_id))
     except Exception:
         dataset = None
-    return _legacy_analysis_contract(prediction, dataset)
+    season = None
+    if dataset is not None:
+        try:
+            from app.services import season_service
+            data = await season_service.get_season(service._provider, dataset.fixture.league_id)
+            if data is not None:
+                season = {"home_id": dataset.fixture.home_team.team_id, "away_id": dataset.fixture.away_team.team_id,
+                          "league": dataset.fixture.league_name, **data}
+            else:
+                season = {"pending": True}
+        except Exception:  # noqa: BLE001
+            season = None
+    return _legacy_analysis_contract(prediction, dataset, season)
 
 
 @app.post("/matches/{match_id}/chat", tags=["legacy-compat"])
