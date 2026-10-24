@@ -30,17 +30,31 @@ async def save_prediction(candidate):
     await _db("POST","prediction_tracking",params={"on_conflict":"prediction_key"},json_body=body,prefer=True)
     return True
 
+def _side_code(prediction,value):
+    """Seçimi 1/X/2 koduna çevirir: kayıtta "1", "Beraberlik" ya da takım adı olabilir."""
+    v=re.sub(r"\s+"," ",str(value or "").strip().lower())
+    if v in {"1","x","2"}:return v.upper()
+    if v in {"beraberlik","berabere","draw","x"}:return "X"
+    home=re.sub(r"\s+"," ",str(prediction.get("home_team") or "").strip().lower()); away=re.sub(r"\s+"," ",str(prediction.get("away_team") or "").strip().lower())
+    if home and (v==home or v.startswith(home) or home.startswith(v)) and not (away and v==away):return "1"
+    if away and (v==away or v.startswith(away) or away.startswith(v)):return "2"
+    return None
+
 def _outcome_from_fixture(prediction,fixture):
     goals=fixture.get("goals") or {}; h,a=goals.get("home"),goals.get("away"); hh,ha=goals.get("half_home"),goals.get("half_away")
     if h is None or a is None:return None,None
     ptype=str(prediction.get("prediction_type") or "").lower(); value=str(prediction.get("prediction_value") or "").strip(); compact=re.sub(r"\s+","",value.lower())
     if ptype=="1x2":
-        actual="1" if h>a else "X" if h==a else "2"; return ("won" if compact.upper()==actual else "lost"),f"MS {actual} ({h}-{a})"
+        actual="1" if h>a else "X" if h==a else "2"; pick=_side_code(prediction,value)
+        if pick is None:return None,None
+        return ("won" if pick==actual else "lost"),f"MS {actual} ({h}-{a})"
     if ptype=="btts":
         actual="var" if h>0 and a>0 else "yok"; return ("won" if compact==actual else "lost"),f"KG {actual.title()} ({h}-{a})"
     if ptype=="1x2_half":
         if hh is None or ha is None:return None,None
-        actual="1" if hh>ha else "X" if hh==ha else "2"; return ("won" if compact.upper()==actual else "lost"),f"İY {actual} ({hh}-{ha})"
+        actual="1" if hh>ha else "X" if hh==ha else "2"; pick=_side_code(prediction,value)
+        if pick is None:return None,None
+        return ("won" if pick==actual else "lost"),f"İY {actual} ({hh}-{ha})"
     if ptype in {"goal_line","goal_line_half"}:
         if ptype=="goal_line_half":
             if hh is None or ha is None:return None,None
