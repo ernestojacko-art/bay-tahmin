@@ -124,7 +124,7 @@ async def accuracy_snapshot(days=30):
     on the previous shape breaks.
     """
     since=(datetime.now(timezone.utc)-timedelta(days=days)).isoformat()
-    rows=await _db("GET","prediction_tracking",params={"select":"result_status,prediction_type,kickoff_at,odds,confidence","kickoff_at":f"gte.{since}","order":"kickoff_at.desc","limit":"5000"})
+    rows=await _db("GET","prediction_tracking",params={"select":"result_status,prediction_type,prediction_value,kickoff_at,odds,confidence","kickoff_at":f"gte.{since}","order":"kickoff_at.desc","limit":"5000"})
     wins=sum(1 for r in rows if r.get("result_status")=="won"); losses=sum(1 for r in rows if r.get("result_status")=="lost"); pending=sum(1 for r in rows if r.get("result_status")=="pending"); void=sum(1 for r in rows if r.get("result_status")=="void"); resolved=wins+losses
     accuracy=round(wins*100/resolved,2) if resolved else None
     sample_threshold=100
@@ -141,7 +141,23 @@ async def accuracy_snapshot(days=30):
         decided=bucket["won"]+bucket["lost"]
         bucket["accuracy_percent"]=round(bucket["won"]*100/decided,2) if decided else None
 
+    def _is_card_rule(r):
+        """Güncel kart kuralı: 1X2 / Çifte Şans / Üst / KG Var ve model olasılığı >= %60."""
+        try:conf=float(r.get("confidence"))
+        except (TypeError,ValueError):return False
+        if conf<0.60:return False
+        t=str(r.get("prediction_type") or ""); v=str(r.get("prediction_value") or "").lower()
+        if t in {"1x2","double_chance"}:return True
+        if t=="goal_line":return "üst" in v
+        if t=="btts":return "var" in v
+        return False
+    cw=sum(1 for r in rows if _is_card_rule(r) and r.get("result_status")=="won"); cl=sum(1 for r in rows if _is_card_rule(r) and r.get("result_status")=="lost")
+    cards={"won":cw,"lost":cl,"decided":cw+cl,"pending":sum(1 for r in rows if _is_card_rule(r) and r.get("result_status")=="pending"),
+           "accuracy_percent":round(cw*100/(cw+cl),2) if cw+cl else None,"target_percent":60,
+           "note":"Kart kuralına uyan seçimler: 1X2, Çifte Şans, Üst, KG Var ve model olasılığı en az %60."}
+
     return {
+        "cards": cards,
         # Shape the frontend actually reads.
         "days": days, "total": len(rows), "won": wins, "lost": losses, "void": void,
         "pending": pending, "decided": resolved, "accuracy_percent": accuracy,
