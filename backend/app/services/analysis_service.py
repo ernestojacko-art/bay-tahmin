@@ -23,22 +23,30 @@ from app.providers.models import MatchRawDataset
 from app.schemas.prediction import MatchPrediction
 
 _log = logging.getLogger("analysis_store")
-STORE_MAX_AGE_SECONDS = 6 * 3600  # kalıcı analiz önbelleği: sunucu uyusa/yeniden başlasa da kullanılır
+STORE_MAX_AGE_SECONDS = 6 * 3600  # bu süreden sonra kayıt "bayat" sayılır ve arka planda yenilenir
+STORE_HARD_MAX_AGE_SECONDS = 36 * 3600  # bayat da olsa bu süreye kadar ANINDA gösterilir (kullanıcı beklemez)
+_refreshing: set[str] = set()
 
 
 async def _store_load(key: str, model=MatchPrediction):
+    obj, _age = await _store_load_ex(key, model)
+    return obj
+
+
+async def _store_load_ex(key: str, model=MatchPrediction):
+    """(nesne, yaş_saniye) döner; 36 saatten eskiyse (None, None)."""
     try:
         import accuracy
         rows = await accuracy._db("GET", "analysis_cache", params={"key": f"eq.{key}", "select": "payload,updated_at"})
         if not rows:
-            return None
+            return None, None
         age = (datetime.now(timezone.utc) - datetime.fromisoformat(rows[0]["updated_at"].replace("Z", "+00:00"))).total_seconds()
-        if age > STORE_MAX_AGE_SECONDS:
-            return None
-        return model.model_validate(rows[0]["payload"])
+        if age > STORE_HARD_MAX_AGE_SECONDS:
+            return None, None
+        return model.model_validate(rows[0]["payload"]), age
     except Exception as exc:  # noqa: BLE001
         _log.debug("kalıcı analiz okunamadı: %s", exc)
-        return None
+        return None, None
 
 
 async def _store_save(key: str, prediction) -> None:
@@ -67,6 +75,25 @@ class AnalysisService:
             self._settings, weights or get_team_strength_weights()
         )
 
+    def _schedule_refresh(self, match_id: str, include_evidence: bool) -> None:
+        """Bayat kaydı kullanıcıyı bekletmeden, arka plan önceliğinde yeniler (maç başına tek seferde)."""
+        key = f"{match_id}:{include_evidence}"
+        if key in _refreshing:
+            return
+        _refreshing.add(key)
+
+        async def _run() -> None:
+            try:
+                from app.core import api_gate
+                api_gate.background.set(True)
+                await self.analyze_match(match_id, force_refresh=True, include_evidence=include_evidence)
+            except Exception as exc:  # noqa: BLE001
+                _log.debug("arka plan yenileme başarısız (%s): %s", match_id, exc)
+            finally:
+                _refreshing.discard(key)
+
+        asyncio.create_task(_run())
+
     async def get_dataset(self, match_id: str, use_cache: bool = True) -> MatchRawDataset:
         cache_key = f"dataset:{self._provider.name}:{match_id}"
         if use_cache:
@@ -75,9 +102,11 @@ class AnalysisService:
                 return cached
         store_key = f"{self._provider.name}:{match_id}:dataset"
         if use_cache:
-            stored = await _store_load(store_key, MatchRawDataset)
+            stored, age = await _store_load_ex(store_key, MatchRawDataset)
             if stored is not None:
                 raw_dataset_cache.set(cache_key, stored, self._settings.cache_default_ttl_seconds)
+                if age is not None and age > STORE_MAX_AGE_SECONDS:
+                    self._schedule_refresh(match_id, False)
                 return stored
         dataset = await self._data_layer.build_match_dataset(match_id)
         raw_dataset_cache.set(cache_key, dataset, self._settings.cache_default_ttl_seconds)
@@ -102,9 +131,9 @@ class AnalysisService:
 
         if not force_refresh:
             base = f"{self._provider.name}:{match_id}"
-            stored = await _store_load(f"{base}:full2")
+            stored, age = await _store_load_ex(f"{base}:full2")
             if stored is None:
-                noev = await _store_load(f"{base}:noev2")
+                noev, age = await _store_load_ex(f"{base}:noev2")
                 if noev is not None:
                     if include_evidence and historical_evidence_client.is_configured():
                         try:
@@ -114,6 +143,8 @@ class AnalysisService:
                         asyncio.create_task(_store_save(f"{base}:full2", noev))
                     stored = noev
             if stored is not None:
+                if age is not None and age > STORE_MAX_AGE_SECONDS:
+                    self._schedule_refresh(match_id, include_evidence)
                 match_analysis_cache.set(cache_key, stored, self._settings.match_analysis_cache_ttl_seconds)
                 return stored
 

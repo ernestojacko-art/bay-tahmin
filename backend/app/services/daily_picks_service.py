@@ -55,11 +55,11 @@ logger = logging.getLogger("bay_tahmin.daily_picks")
 # raised from the original 15 -> 30 as a moderate, "sen seç" default after
 # the plan was confirmed as 5DollarFootballAPI "Pro"; watch Render logs for
 # credit-limit errors and lower this again if they reappear).
-MAX_LEAGUES = int(os.getenv("DAILY_PICKS_MAX_LEAGUES", "12"))
-MAX_CANDIDATES = int(os.getenv("DAILY_PICKS_MAX_CANDIDATES", "60"))
+MAX_LEAGUES = int(os.getenv("DAILY_PICKS_MAX_LEAGUES", "25"))
+MAX_CANDIDATES = int(os.getenv("DAILY_PICKS_MAX_CANDIDATES", "150"))
 # İlk Yarı 1X2 piyasası açık (iddaa'da İY/MS'nin açık olduğu majör) maçlar için lig sınırı:
 # bu maçlar günde ligi başına 1-2 tane olduğundan daha çok lige yayılmak gerekir.
-MAX_HT_LEAGUES = int(os.getenv("DAILY_PICKS_MAX_HT_LEAGUES", "20"))
+MAX_HT_LEAGUES = int(os.getenv("DAILY_PICKS_MAX_HT_LEAGUES", "30"))
 # İY/MS kartında "dönüş" kombinasyonları (1/2, 2/1) için en az model olasılığı.
 IYMS_MIN_SWING_PROBABILITY = float(os.getenv("IYMS_MIN_SWING_PROBABILITY", "0.02"))
 
@@ -394,7 +394,8 @@ class DailyPicksService:
     async def precompute_loop(self) -> None:
         """Sunucu ayaktayken bugünü ve yarını önceden hesaplar; kullanıcı beklemez."""
         from app.core import api_gate
-        api_gate.background.set(False)  # kartlar kullanıcıya dönük: en yüksek öncelik
+        api_gate.background.set(False)
+        api_gate.picks.set(True)  # kartlar: kullanıcı tıklamasından sonra, arka plandan önce
         await asyncio.sleep(3)
         while True:
             for offset in (0, 1):

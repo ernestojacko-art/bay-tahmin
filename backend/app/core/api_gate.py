@@ -20,23 +20,36 @@ background: contextvars.ContextVar[bool] = contextvars.ContextVar("api_gate_back
 # Çok düşük öncelik: ölçüm/veri toplama işleri (geçmiş maç toplama, geriye dönük test). Hem kullanıcıya hem
 # diğer arka plan işlerine (önceden analiz) yol verir.
 low: contextvars.ContextVar[bool] = contextvars.ContextVar("api_gate_low", default=False)
+# Günün kart havuzu (İdeal/Sürpriz/İY-MS): kullanıcının maç analizi tıklamasından SONRA, arka plan
+# işlerinden ÖNCE gelir.
+picks: contextvars.ContextVar[bool] = contextvars.ContextVar("api_gate_picks", default=False)
 _fg_waiting = 0
+_pk_waiting = 0
 _bg_waiting = 0
 
 
 async def acquire() -> None:
-    global _lock, _fg_waiting, _bg_waiting
+    global _lock, _fg_waiting, _pk_waiting, _bg_waiting
     if _lock is None:
         _lock = asyncio.Lock()
     if low.get():
-        while _fg_waiting > 0 or _bg_waiting > 0:
+        while _fg_waiting > 0 or _pk_waiting > 0 or _bg_waiting > 0:
             await asyncio.sleep(1.0)
         await _take()
+        return
+    if picks.get():
+        _pk_waiting += 1
+        try:
+            while _fg_waiting > 0:
+                await asyncio.sleep(0.5)
+            await _take()
+        finally:
+            _pk_waiting -= 1
         return
     if background.get():
         _bg_waiting += 1
         try:
-            while _fg_waiting > 0:
+            while _fg_waiting > 0 or _pk_waiting > 0:
                 await asyncio.sleep(0.5)
             await _take()
         finally:
