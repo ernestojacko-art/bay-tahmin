@@ -426,13 +426,13 @@ class DailyPicksService:
                 if age > SNAPSHOT_REFRESH_SECONDS:
                     asyncio.create_task(self._refresh_in_background(target))
                 _picks_response_cache.set(cache_key, result, 60)
-                await self._record_for_accuracy(result.picks)
+                await self._record_for_accuracy(result.picks, category)
                 return result
 
         # 2) Snapshot yok: ortak havuzdan hesapla (kısa süre bekler, kalanı arka planda sürer).
         pool = await self._get_pool(target)
         result = self._assemble(category, target, limit, pool)
-        await self._record_for_accuracy(result.picks)
+        await self._record_for_accuracy(result.picks, category)
         analyzed = pool.analyzed
         ttl = 8 if pool.truncated else (_PARTIAL_POOL_TTL_SECONDS if (pool.failed and not analyzed) else _PICKS_CACHE_TTL_SECONDS)
         _picks_response_cache.set(cache_key, result, ttl)
@@ -457,7 +457,7 @@ class DailyPicksService:
         )
 
     @staticmethod
-    async def _record_for_accuracy(picks: list[PickCandidate]) -> None:
+    async def _record_for_accuracy(picks: list[PickCandidate], category: str = "") -> None:
         """Best-effort: every real pick shown to a user is logged for the
         admin panel's won/lost accuracy tracking. Never raises -- a tracking
         failure (Supabase down, not configured, etc.) must never break the
@@ -471,7 +471,7 @@ class DailyPicksService:
                     "match_id": pick.match_id, "kickoff": pick.kickoff.isoformat(),
                     "competition": pick.league_name, "home_team": pick.home_team, "away_team": pick.away_team,
                     "market_type": market_type, "selection": pick.selection,
-                    "market_probability": pick.confidence, "odd": pick.odd,
+                    "market_probability": pick.confidence, "odd": pick.odd, "card": category,
                 })
             except Exception:
                 pass

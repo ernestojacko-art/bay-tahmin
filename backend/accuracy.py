@@ -124,7 +124,7 @@ async def accuracy_snapshot(days=30):
     on the previous shape breaks.
     """
     since=(datetime.now(timezone.utc)-timedelta(days=days)).isoformat()
-    rows=await _db("GET","prediction_tracking",params={"select":"result_status,prediction_type,prediction_value,kickoff_at,odds,confidence","kickoff_at":f"gte.{since}","order":"kickoff_at.desc","limit":"5000"})
+    rows=await _db("GET","prediction_tracking",params={"select":"result_status,prediction_type,prediction_value,kickoff_at,odds,confidence,card:raw_prediction->>card","kickoff_at":f"gte.{since}","order":"kickoff_at.desc","limit":"5000"})
     wins=sum(1 for r in rows if r.get("result_status")=="won"); losses=sum(1 for r in rows if r.get("result_status")=="lost"); pending=sum(1 for r in rows if r.get("result_status")=="pending"); void=sum(1 for r in rows if r.get("result_status")=="void"); resolved=wins+losses
     accuracy=round(wins*100/resolved,2) if resolved else None
     sample_threshold=100
@@ -155,6 +155,15 @@ async def accuracy_snapshot(days=30):
     cards={"won":cw,"lost":cl,"decided":cw+cl,"pending":sum(1 for r in rows if _is_card_rule(r) and r.get("result_status")=="pending"),
            "accuracy_percent":round(cw*100/(cw+cl),2) if cw+cl else None,"target_percent":60,
            "note":"Kart kuralına uyan seçimler: 1X2, Çifte Şans, Üst, KG Var ve model olasılığı en az %60."}
+
+    by_card: dict[str,dict]={}
+    for r in rows:
+        c=r.get("card")
+        if not c or r.get("result_status") not in {"won","lost"}:continue
+        b=by_card.setdefault(c,{"won":0,"lost":0}); b["won" if r["result_status"]=="won" else "lost"]+=1
+    for b in by_card.values():
+        d=b["won"]+b["lost"]; b["decided"]=d; b["accuracy_percent"]=round(b["won"]*100/d,2) if d else None
+    cards["by_card"]=by_card
 
     return {
         "cards": cards,
