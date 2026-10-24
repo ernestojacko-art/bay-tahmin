@@ -121,6 +121,21 @@ def _ideal_odd(dataset: MatchRawDataset, market: str, selection: str, home: str,
     return None
 
 
+# Ölçüm (761 bitmiş maç, model_log): modelin %60+ verdiği 1X2 %77, Üst 2.5 %64, KG Var %63 tutturdu;
+# Alt 2.5 genelde %55, KG Yok %52 tutturdu -> bu iki tür "İdeal" kartlarına alınmaz.
+IDEAL_KIND_MIN_PROB = {"1x2": 0.60, "over": 0.60, "btts_yes": 0.60, "dc": 0.60}
+
+
+def _ideal_kind(market: str, selection: str) -> str:
+    if market.startswith("Maç Sonucu"):
+        return "1x2"
+    if market == "Çifte Şans":
+        return "dc"
+    if market == "Alt/Üst Gol":
+        return "over" if selection.startswith("Üst") else "under"
+    return "btts_yes" if selection == "Var" else "btts_no"
+
+
 def ideal_candidate_for_match(prediction: MatchPrediction, dataset: MatchRawDataset) -> PickCandidate | None:
     """The single safest pick for this fixture, across several real markets.
 
@@ -173,6 +188,9 @@ def ideal_candidate_for_match(prediction: MatchPrediction, dataset: MatchRawData
     # Oranı gerçekten oynanabilir (>= IDEAL_MIN_ODD) olmayan seçenekler elenir.
     playable = []
     for cand in candidates:
+        min_prob = IDEAL_KIND_MIN_PROB.get(_ideal_kind(cand[1], cand[2]))
+        if min_prob is None or cand[0] < min_prob:
+            continue
         odd = _ideal_odd(dataset, cand[1], cand[2], home, away)
         if cand[1] == "Çifte Şans":
             sides = [_market_price(dataset, "Maç Sonucu 1X2", k) for k in
@@ -246,11 +264,7 @@ def surprise_candidates_for_match(prediction: MatchPrediction, dataset: MatchRaw
         mi = mc.market_implied
         ox = prediction.one_x_two
         market_fav = max((mi.home_win, home), (mi.draw, "Beraberlik"), (mi.away_win, away))[1]
-        for model_prob, market_prob, label in (
-            (ox.home_win, mi.home_win, home), (ox.draw, mi.draw, "Beraberlik"), (ox.away_win, mi.away_win, away),
-        ):
-            if label != market_fav:
-                add("Maç Sonucu (1X2)", label, model_prob, market_prob)
+        # Ölçüm: piyasanın favorisine karşı 1X2 sürpriz seçimleri 22'de 0 tutturdu -> artık önerilmez.
 
     ou_market = _find_market(markets, "alt/üst gol", "üst/alt gol", "goal line", "over/under")
     if ou_market is not None:
@@ -274,7 +288,6 @@ def surprise_candidates_for_match(prediction: MatchPrediction, dataset: MatchRaw
             if implied is not None:
                 market_yes, market_no = implied
                 add("Karşılıklı Gol (KG)", "Var", prediction.btts_yes_probability, market_yes)
-                add("Karşılıklı Gol (KG)", "Yok", 1 - prediction.btts_yes_probability, market_no)
 
     handicap_market = _find_market(markets, "asya handikap", "asian handicap")
     if handicap_market is not None:
