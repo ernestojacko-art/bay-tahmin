@@ -55,11 +55,11 @@ logger = logging.getLogger("bay_tahmin.daily_picks")
 # raised from the original 15 -> 30 as a moderate, "sen seç" default after
 # the plan was confirmed as 5DollarFootballAPI "Pro"; watch Render logs for
 # credit-limit errors and lower this again if they reappear).
-MAX_LEAGUES = int(os.getenv("DAILY_PICKS_MAX_LEAGUES", "8"))
-MAX_CANDIDATES = int(os.getenv("DAILY_PICKS_MAX_CANDIDATES", "24"))
+MAX_LEAGUES = int(os.getenv("DAILY_PICKS_MAX_LEAGUES", "12"))
+MAX_CANDIDATES = int(os.getenv("DAILY_PICKS_MAX_CANDIDATES", "60"))
 # İlk Yarı 1X2 piyasası açık (iddaa'da İY/MS'nin açık olduğu majör) maçlar için lig sınırı:
 # bu maçlar günde ligi başına 1-2 tane olduğundan daha çok lige yayılmak gerekir.
-MAX_HT_LEAGUES = int(os.getenv("DAILY_PICKS_MAX_HT_LEAGUES", "14"))
+MAX_HT_LEAGUES = int(os.getenv("DAILY_PICKS_MAX_HT_LEAGUES", "20"))
 # İY/MS kartında "dönüş" kombinasyonları (1/2, 2/1) için en az model olasılığı.
 IYMS_MIN_SWING_PROBABILITY = float(os.getenv("IYMS_MIN_SWING_PROBABILITY", "0.02"))
 
