@@ -69,7 +69,7 @@ IYMS_MIN_SWING_PROBABILITY = float(os.getenv("IYMS_MIN_SWING_PROBABILITY", "0.02
 # deploy / uyku sonrası da kaybolmaz); bayatlamışsa eski sonuç gösterilirken arka planda yenilenir.
 SNAPSHOT_LIMITS = tuple(range(1, 13))
 # Bu andan ÖNCE yazılmış snapshot'lar eski seçim kurallarıyla üretildi (ör. düşük oranlı çifte şans); yok sayılır.
-SNAPSHOT_MIN_UPDATED = datetime(2026, 10, 24, 5, 0, tzinfo=timezone.utc)
+SNAPSHOT_MIN_UPDATED = datetime(2026, 10, 24, 11, 0, tzinfo=timezone.utc)
 SNAPSHOT_REFRESH_SECONDS = int(os.getenv("DAILY_PICKS_SNAPSHOT_REFRESH_MINUTES", "90")) * 60
 PRECOMPUTE_INTERVAL_SECONDS = int(os.getenv("DAILY_PICKS_PRECOMPUTE_MINUTES", "20")) * 60
 _CATEGORIES = ("ideal", "surprise", "iyms_surprise")
