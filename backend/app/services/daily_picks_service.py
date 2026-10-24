@@ -306,6 +306,12 @@ class DailyPicksService:
                 "sürebilir. Sonuçlar hazır oldukça bu sayfada güncellenecek."
                 + (" Şu ana kadarki sonuç gösteriliyor." if picks else "")
             )
+        if category == "iyms_surprise" and picks:
+            warn = (
+                "Düşük isabet uyarısı: İY/MS tahminleri ölçülen geçmiş sonuçlarda düşük tutturma oranına "
+                "sahip (yaklaşık 7/38). Bu kart yüksek riskli, eğlence amaçlı bir seçkidir; ciddi kupon için önerilmez."
+            )
+            note = f"{warn} {note}" if note else warn
         return DailyPicksResponse(
             generated_at=datetime.now(timezone.utc), target_date=target, category=category,
             picks=picks, candidates_considered=len(analyzed),
