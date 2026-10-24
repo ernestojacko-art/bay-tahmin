@@ -248,6 +248,24 @@ class DailyPicksService:
             _pool_tasks.pop(key, None)
         if pool.analyzed:
             await self._save_snapshots(target, pool)
+            # 2. aşama: günlük liste yalnızca 1X2 taşır; Alt/Üst, KG ve handikap oranlarını (Sürpriz kartı ve
+            # İdeal'in Üst/KG seçimleri için gerekli) başlama saati yakın olandan başlayarak ekler.
+            try:
+                await self._enrich_pool(target, pool)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("daily_picks: oran zenginleştirme hatası: %s", exc)
+
+    async def _enrich_pool(self, target: date, pool: "_Pool") -> None:
+        items = sorted(pool.analyzed, key=lambda i: i.fixture.kickoff)
+        done = 0
+        for item in items:
+            if await self._service.enrich_odds(item.dataset):
+                done += 1
+                if done % 12 == 0:
+                    await self._save_snapshots(target, pool)
+        if done:
+            logger.info("daily_picks: %d maç için tam oran eklendi", done)
+            await self._save_snapshots(target, pool)
 
     async def _get_pool(self, target: date, wait: float | None = REQUEST_WAIT_SECONDS) -> _Pool:
         key = target.isoformat()

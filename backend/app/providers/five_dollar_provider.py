@@ -428,6 +428,13 @@ class FiveDollarFootballProvider(BaseFootballDataProvider):
         try: return self._market_rows(await self._request(f"fixtures/{match_id}/odds",{"lang":"en"}))
         except Exception: return []
 
+    async def get_odds_full(self, match_id: str) -> list[OddsMarket]:
+        """Maç başına TÜM piyasaları (Alt/Üst, KG, handikap...) çeker; günlük liste yalnızca 1X2 taşır."""
+        rows = self._market_rows(await self._request(f"fixtures/{match_id}/odds", {"lang": "en"}))
+        if rows:
+            self._odds_cache[str(match_id)] = rows
+        return rows
+
     async def health_check(self) -> bool:
         try:
             await self._all_pages("fixtures", {"start_time": int(datetime.now(timezone.utc).timestamp())-3600, "end_time": int(datetime.now(timezone.utc).timestamp())+86400, "status":"all", "lang":"en", "per_page":1})

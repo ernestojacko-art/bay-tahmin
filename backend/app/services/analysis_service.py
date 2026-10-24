@@ -75,6 +75,31 @@ class AnalysisService:
             self._settings, weights or get_team_strength_weights()
         )
 
+    _enrich_tried: set[str] = set()
+
+    async def enrich_odds(self, dataset: MatchRawDataset) -> bool:
+        """Veri setinde yalnızca 1X2 oranı varsa maçın tüm piyasalarını çeker ve veri setine ekler."""
+        mid = str(dataset.fixture.match_id)
+        if mid in self._enrich_tried or any("alt/üst gol" in m.market_name.lower() for m in dataset.odds_markets):
+            return False
+        fn = getattr(self._provider, "get_odds_full", None)
+        if fn is None:
+            return False
+        self._enrich_tried.add(mid)
+        try:
+            full = await fn(mid)
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("tam oran çekilemedi (%s): %s", mid, exc)
+            self._enrich_tried.discard(mid)
+            return False
+        if not full:
+            return False
+        have = {(m.market_name, tuple(s.label for s in m.selections)) for m in dataset.odds_markets}
+        dataset.odds_markets = list(dataset.odds_markets) + [
+            m for m in full if (m.market_name, tuple(s.label for s in m.selections)) not in have]
+        asyncio.create_task(_store_save(f"{self._provider.name}:{mid}:dataset", dataset))
+        return True
+
     def _schedule_refresh(self, match_id: str, include_evidence: bool) -> None:
         """Bayat kaydı kullanıcıyı bekletmeden, arka plan önceliğinde yeniler (maç başına tek seferde)."""
         key = f"{match_id}:{include_evidence}"
