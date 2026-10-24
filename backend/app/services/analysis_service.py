@@ -26,6 +26,7 @@ _log = logging.getLogger("analysis_store")
 STORE_MAX_AGE_SECONDS = 6 * 3600  # bu süreden sonra kayıt "bayat" sayılır ve arka planda yenilenir
 STORE_HARD_MAX_AGE_SECONDS = 36 * 3600  # bayat da olsa bu süreye kadar ANINDA gösterilir (kullanıcı beklemez)
 _refreshing: set[str] = set()
+_refresh_sem: asyncio.Semaphore | None = None
 
 
 async def _store_load(key: str, model=MatchPrediction):
@@ -103,15 +104,20 @@ class AnalysisService:
     def _schedule_refresh(self, match_id: str, include_evidence: bool) -> None:
         """Bayat kaydı kullanıcıyı bekletmeden, arka plan önceliğinde yeniler (maç başına tek seferde)."""
         key = f"{match_id}:{include_evidence}"
-        if key in _refreshing:
-            return
+        if key in _refreshing or len(_refreshing) >= 25:
+            return  # aynı anda en fazla 25 bekleyen yenileme: API kotasını kullanıcıdan çalmasın
         _refreshing.add(key)
 
         async def _run() -> None:
             try:
                 from app.core import api_gate
+                api_gate.picks.set(False)  # çağıranın bağlamı kopyalanır: kart önceliğini DEVRALMA
                 api_gate.background.set(True)
-                await self.analyze_match(match_id, force_refresh=True, include_evidence=include_evidence)
+                global _refresh_sem
+                if _refresh_sem is None:
+                    _refresh_sem = asyncio.Semaphore(1)
+                async with _refresh_sem:
+                    await self.analyze_match(match_id, force_refresh=True, include_evidence=include_evidence)
             except Exception as exc:  # noqa: BLE001
                 _log.debug("arka plan yenileme başarısız (%s): %s", match_id, exc)
             finally:
