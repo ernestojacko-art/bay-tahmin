@@ -128,6 +128,7 @@ async def backtest_cycle(analysis_service) -> int:
 async def resolve_loop(analysis_service) -> None:
     """Sonuç işleme, uzun süren backtest turlarına takılmasın diye ayrı döngüde çalışır."""
     api_gate.background.set(True)
+    api_gate.low.set(True)
     await asyncio.sleep(60)
     while True:
         try:
@@ -144,6 +145,7 @@ async def resolve_loop(analysis_service) -> None:
 
 async def loop(analysis_service) -> None:
     api_gate.background.set(True)
+    api_gate.low.set(True)
     await asyncio.sleep(120)
     while True:
         try:

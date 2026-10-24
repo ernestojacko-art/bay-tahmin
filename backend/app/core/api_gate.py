@@ -17,25 +17,36 @@ _lock: asyncio.Lock | None = None
 # Arka plan işleri (önceden hesaplama, Spor Toto bülteni) bu bayrakla çalışır; kullanıcı
 # isteği (maç analizi tıklaması) bekliyorsa arka plan istekleri geri çekilir.
 background: contextvars.ContextVar[bool] = contextvars.ContextVar("api_gate_background", default=False)
+# Çok düşük öncelik: ölçüm/veri toplama işleri (geçmiş maç toplama, geriye dönük test). Hem kullanıcıya hem
+# diğer arka plan işlerine (önceden analiz) yol verir.
+low: contextvars.ContextVar[bool] = contextvars.ContextVar("api_gate_low", default=False)
 _fg_waiting = 0
+_bg_waiting = 0
 
 
 async def acquire() -> None:
-    global _lock, _fg_waiting
+    global _lock, _fg_waiting, _bg_waiting
     if _lock is None:
         _lock = asyncio.Lock()
+    if low.get():
+        while _fg_waiting > 0 or _bg_waiting > 0:
+            await asyncio.sleep(1.0)
+        await _take()
+        return
     if background.get():
-        while _fg_waiting > 0:
-            await asyncio.sleep(0.5)
-        fg = False
-    else:
-        fg = True
-        _fg_waiting += 1
+        _bg_waiting += 1
+        try:
+            while _fg_waiting > 0:
+                await asyncio.sleep(0.5)
+            await _take()
+        finally:
+            _bg_waiting -= 1
+        return
+    _fg_waiting += 1
     try:
         await _take()
     finally:
-        if fg:
-            _fg_waiting -= 1
+        _fg_waiting -= 1
 
 
 async def _take() -> None:

@@ -69,6 +69,7 @@ async def collect(analysis_service) -> int:
 
 async def loop(analysis_service) -> None:
     api_gate.background.set(True)
+    api_gate.low.set(True)
     await asyncio.sleep(180)
     while True:
         try:
