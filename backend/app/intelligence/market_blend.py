@@ -108,7 +108,8 @@ def build_rationale(
         parts.append(
             f"İstatistikler tek başına yanıltabileceği için iki görüşü birleştirdik "
             f"(istatistiğe {_pct(weight)}, bahis oranlarına {_pct(1 - weight)} ağırlık verdik). "
-            f"Birleşik sonuçta öne çıkan: {fin_fav[0]} ({_pct(fin_fav[1])})."
+            f"Birleşik sonuçlar: {names[0][0]} {_pct(names[0][1])}, Beraberlik {_pct(names[1][1])}, "
+            f"{names[2][0]} {_pct(names[2][1])}."
         )
         gap = mkt_fav[2] - mkt_fav[1]
         if gap >= SURPRISE_GAP:

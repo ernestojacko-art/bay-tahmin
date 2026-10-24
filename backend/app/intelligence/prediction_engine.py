@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from app.core.config import Settings, TeamStrengthWeights
 from app.intelligence import statistical_models as stats
 from app.intelligence.confidence_engine import build_confidence_report
+from app.intelligence.main_scenario import build_main_scenario
 from app.intelligence.market_blend import blend_with_market, build_rationale, model_weight
 from app.intelligence.market_cross_check import cross_check
 from app.intelligence.sanity_engine import SanityContradictionEngine
@@ -114,6 +115,10 @@ class PredictionEngine:
             h2h=(dataset.h2h.matches if dataset.h2h else []),
         )
 
+        main = build_main_scenario(
+            final_1x2, score_matrix, dataset.fixture.home_team.name, dataset.fixture.away_team.name,
+        )
+
         scenarios = build_scenarios(
             final_1x2,
             expected_goals,
@@ -121,6 +126,7 @@ class PredictionEngine:
             dataset.fixture.away_team.name,
             market_comparison.market_implied,
             rationale=rationale,
+            main_summary=main.summary if main else None,
         )
 
         # top_n=9: kullanıcı talebi üzerine artık İY/MS'nin TÜM 9 kombinasyonu
@@ -189,4 +195,5 @@ class PredictionEngine:
             warnings=warnings,
             disclaimers=disclaimers,
             analysis_rationale=rationale,
+            main_scenario=main.model_dump() if main else None,
         )

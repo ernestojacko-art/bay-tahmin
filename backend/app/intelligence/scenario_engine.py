@@ -26,6 +26,7 @@ def build_scenarios(
     away_team_name: str,
     market_implied: OneXTwoProbabilities | None = None,
     rationale: str = "",
+    main_summary: str | None = None,
 ) -> list[MatchScenario]:
     scenarios: list[MatchScenario] = []
     tempo = _tempo_label(expected_goals.total_xg)
@@ -66,6 +67,8 @@ def build_scenarios(
     else:
         favorite_desc = f"Analizde {fav_team} öne çıkıyor.{market_note}"
         favorite_label = f"{fav_team} (model favorisi)"
+    if main_summary:
+        favorite_desc = f"{main_summary}{market_note}"
     if rationale:
         favorite_desc = f"{favorite_desc} {rationale}"
     scenarios.append(
