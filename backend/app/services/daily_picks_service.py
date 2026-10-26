@@ -589,6 +589,10 @@ class DailyPicksService:
                     if snap is None or snap[1] > SNAPSHOT_REFRESH_SECONDS:
                         _analysis_pool_cache.invalidate(pool_key)
                         await self._get_pool(target, wait=None)
+                    elif _analysis_pool_cache.get(pool_key) is None:
+                        # Snapshot taze ama havuz bellekte yok (sunucu yeni açıldı): 20'li kart 3 günün
+                        # havuzlarına ihtiyaç duyar; analizler önbellekten geldiği için hızlı yeniden kurulur.
+                        await self._get_pool(target, wait=None)
                 except Exception as exc:
                     logger.warning("daily_picks: önhesaplama hatası (%s): %s", target, exc)
             await self._save_twenty()
