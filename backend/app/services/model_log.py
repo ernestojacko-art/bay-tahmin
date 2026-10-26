@@ -126,9 +126,10 @@ async def backtest_cycle(analysis_service) -> int:
 
 
 async def resolve_loop(analysis_service) -> None:
-    """Sonuç işleme, uzun süren backtest turlarına takılmasın diye ayrı döngüde çalışır."""
+    """Sonuç işleme, uzun süren backtest turlarına takılmasın diye ayrı döngüde çalışır.
+    Kartların tuttu/tutmadı bilgisi buna bağlı olduğundan "düşük" değil arka plan önceliğindedir."""
     api_gate.background.set(True)
-    api_gate.low.set(True)
+    api_gate.low.set(False)
     await asyncio.sleep(60)
     while True:
         try:
@@ -140,7 +141,7 @@ async def resolve_loop(analysis_service) -> None:
                 logger.info("kart sonuçları işlenemedi: %s", exc)
         except Exception as exc:  # noqa: BLE001
             logger.warning("model_log sonuç döngüsü hatası: %s", exc)
-        await asyncio.sleep(20 * 60)
+        await asyncio.sleep(10 * 60)
 
 
 async def loop(analysis_service) -> None:

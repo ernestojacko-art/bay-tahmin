@@ -123,8 +123,9 @@ def _ideal_odd(dataset: MatchRawDataset, market: str, selection: str, home: str,
 
 # Ölçüm (761 bitmiş maç, model_log): modelin %60+ verdiği 1X2 %77, Üst 2.5 %64, KG Var %63 tutturdu;
 # Alt 2.5 genelde %55, KG Yok %52 tutturdu -> bu iki tür "İdeal" kartlarına alınmaz.
+# KG Var İdeal kartından çıkarıldı: 23-25 Ekim kartlarında 1/4 tuttu (örnek küçük, tekrar ölçülecek).
 # Ölçüm (590 maç): model %55-65 verdiği favori 1X2 seçimlerinde %63,7 tuttu -> 1X2 eşiği %55.
-IDEAL_KIND_MIN_PROB = {"1x2": 0.55, "over": 0.60, "btts_yes": 0.60, "dc": 0.60}
+IDEAL_KIND_MIN_PROB = {"1x2": 0.55, "over": 0.60, "dc": 0.60}
 
 
 def _ideal_kind(market: str, selection: str) -> str:
