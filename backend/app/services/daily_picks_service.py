@@ -551,8 +551,10 @@ class DailyPicksService:
     async def _build_twenty(self) -> DailyPicksResponse:
         now = datetime.now(timezone.utc)
         try:
+            # Gün dönüşünde (00:00) yeni liste hazır olana kadar boş kalmasın: en son yayınlanan listeyi
+            # (başlamamış maçlarıyla) göster; yeni liste arka planda kurulur.
             rows = await accuracy._db("GET", "daily_picks_snapshot", params={
-                "target_date": f"eq.{istanbul_today().isoformat()}", "category": "eq.twenty:20",
+                "category": "eq.twenty:20", "order": "updated_at.desc", "limit": "1",
                 "select": "payload,updated_at"})
         except Exception:  # noqa: BLE001
             rows = None
