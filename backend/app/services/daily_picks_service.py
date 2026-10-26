@@ -76,7 +76,23 @@ _CATEGORIES = ("ideal", "surprise", "iyms_surprise")
 # 20'li kart: önümüzdeki 3 günün maçlarından 1X2 / KG / 2.5 Alt-Üst karışık 20 seçim; hedef (%60) bu kart üzerinden izlenir.
 TWENTY_LIMIT = 20
 TWENTY_DAYS = 3
-TWENTY_MIN_PROB = {"1x2": 0.55, "over": 0.60, "under": 0.60, "btts_yes": 0.60, "btts_no": 0.60}
+# Uygunluk eşikleri ve "ölçülen gerçek isabet" tahmini (model_log, ~1300 maç): modelin Üst/KG olasılıkları sayısal olarak
+# yüksek görünür ama gerçekte 1X2 favorisinden az tutar; bu yüzden seçim ham olasılığa değil ölçülen isabete göre yapılır.
+TWENTY_MIN_PROB = {"1x2": 0.55, "over": 0.70, "under": 0.70, "btts_yes": 0.60}
+TWENTY_TYPE_CAP = {"1x2": 10, "over": 5, "under": 3, "btts_yes": 5}
+TWENTY_DAY_QUOTA = (7, 7, 6)
+
+
+def _twenty_est_hit(kind: str, p: float) -> float:
+    if kind == "1x2":
+        return 0.82 if p >= 0.65 else 0.637
+    if kind == "over":
+        return 0.686
+    if kind == "under":
+        return 0.622
+    if kind == "btts_yes":
+        return 0.659 if p >= 0.70 else 0.611
+    return 0.0
 _refresh_started: dict[str, float] = {}
 
 # Response-level cache: once a category has been built for a given date,
@@ -415,11 +431,11 @@ class DailyPicksService:
 
 
     # ------------------------------------------------------------ 20'li kart
-    def _twenty_pick(self, item: "_Analyzed") -> PickCandidate | None:
+    def _twenty_options(self, item: "_Analyzed") -> list[tuple[float, str, PickCandidate]]:
         pred, ds = item.prediction, item.dataset
         mc = pred.market_comparison
         if not mc.market_available:
-            return None
+            return []
         home, away = pred.home_team.team_name, pred.away_team.team_name
         opts: list[tuple[float, str, str, str]] = []  # (olasılık, tür, piyasa, seçim)
         ox = pred.one_x_two
@@ -430,52 +446,58 @@ class DailyPicksService:
         if ou is not None:
             opts.append((ou.over, "over", "Alt/Üst Gol", "Üst 2.5"))
             opts.append((ou.under, "under", "Alt/Üst Gol", "Alt 2.5"))
-        by = pred.btts_yes_probability
-        opts.append((by, "btts_yes", "Karşılıklı Gol (KG)", "Var"))
-        opts.append((1 - by, "btts_no", "Karşılıklı Gol (KG)", "Yok"))
-        ok = [o for o in opts if o[0] >= TWENTY_MIN_PROB[o[1]]]
-        if not ok:
-            return None
-        prob, _kind, market, selection = max(ok, key=lambda o: o[0])
-        odd = None
-        try:
-            odd = mme._ideal_odd(ds, market, selection, home, away)
-        except Exception:  # noqa: BLE001
-            odd = None
+        opts.append((pred.btts_yes_probability, "btts_yes", "Karşılıklı Gol (KG)", "Var"))
+        out = []
         fx = ds.fixture
-        return PickCandidate(
-            match_id=fx.match_id, home_team=home, away_team=away, league_name=fx.league_name, kickoff=fx.kickoff,
-            market=market, selection=selection, model_probability=round(prob, 4),
-            odd=round(odd, 2) if odd else None, confidence=round(prob, 4),
-            risk=mme._risk_for_probability(prob), data_quality=pred.data_quality,
-            rationale=f"Model bu seçime %{prob*100:.1f} olasılık veriyor. " + (pred.analysis_rationale or ""),
-        )
+        for prob, kind, market, selection in opts:
+            if prob < TWENTY_MIN_PROB[kind]:
+                continue
+            odd = None
+            try:
+                odd = mme._ideal_odd(ds, market, selection, home, away)
+            except Exception:  # noqa: BLE001
+                odd = None
+            est = _twenty_est_hit(kind, prob)
+            out.append((est + prob * 0.001, kind, PickCandidate(
+                match_id=fx.match_id, home_team=home, away_team=away, league_name=fx.league_name, kickoff=fx.kickoff,
+                market=market, selection=selection, model_probability=round(prob, 4),
+                odd=round(odd, 2) if odd else None, confidence=round(prob, 4),
+                risk=mme._risk_for_probability(prob), data_quality=pred.data_quality,
+                rationale=(f"Model bu seçime %{prob*100:.1f} olasılık veriyor; geçmiş ölçümde bu tür seçimler "
+                           f"yaklaşık %{est*100:.0f} tuttu. ") + (pred.analysis_rationale or ""))))
+        return out
 
     def _assemble_twenty(self, pools: list["_Pool"]) -> DailyPicksResponse:
         now = datetime.now(timezone.utc)
-        seen: set[str] = set()
-        cands: list[PickCandidate] = []
+        cands: list[tuple[float, str, PickCandidate]] = []
         considered = 0
         for pool in pools:
             for item in pool.analyzed:
                 considered += 1
-                if item.fixture.kickoff <= now or item.fixture.match_id in seen:
+                if item.fixture.kickoff <= now:
                     continue
-                pick = self._twenty_pick(item)
-                if pick is not None:
-                    seen.add(item.fixture.match_id)
-                    cands.append(pick)
-        cands.sort(key=lambda c: c.model_probability, reverse=True)
-        # 3 güne yayılım: gün başına kota (7/7/6); boş kalan yer en iyi kalan adaylarla doldurulur.
+                cands.extend(self._twenty_options(item))
+        cands.sort(key=lambda c: c[0], reverse=True)
         today = istanbul_today()
-        quota = [7, 7, 6]
         chosen: list[PickCandidate] = []
-        for day in range(TWENTY_DAYS):
-            day_c = [c for c in cands if (c.kickoff.astimezone(ISTANBUL).date() - today).days == day]
-            chosen += day_c[:quota[day]]
-        ids = {c.match_id for c in chosen}
-        chosen += [c for c in cands if c.match_id not in ids][:TWENTY_LIMIT - len(chosen)]
-        top = sorted(chosen[:TWENTY_LIMIT], key=lambda c: c.kickoff)
+        used: set[str] = set()
+        by_kind: Counter = Counter()
+        by_day: Counter = Counter()
+
+        def take(relax_days: bool) -> None:
+            for _est, kind, c in cands:
+                if len(chosen) >= TWENTY_LIMIT:
+                    return
+                day = min(max((c.kickoff.astimezone(ISTANBUL).date() - today).days, 0), TWENTY_DAYS - 1)
+                if c.match_id in used or by_kind[kind] >= TWENTY_TYPE_CAP[kind]:
+                    continue
+                if not relax_days and by_day[day] >= TWENTY_DAY_QUOTA[day]:
+                    continue
+                chosen.append(c); used.add(c.match_id); by_kind[kind] += 1; by_day[day] += 1
+
+        take(False)
+        take(True)
+        top = sorted(chosen, key=lambda c: c.kickoff)
         note = None
         if len(top) < TWENTY_LIMIT:
             note = (f"Kriterleri karşılayan {len(top)} seçim bulundu ({considered} maç analiz edildi); "
