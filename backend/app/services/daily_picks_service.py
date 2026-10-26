@@ -75,6 +75,7 @@ PRECOMPUTE_INTERVAL_SECONDS = int(os.getenv("DAILY_PICKS_PRECOMPUTE_MINUTES", "2
 _CATEGORIES = ("ideal", "surprise", "iyms_surprise")
 # 20'li kart: önümüzdeki 3 günün maçlarından 1X2 / KG / 2.5 Alt-Üst karışık 20 seçim; hedef (%60) bu kart üzerinden izlenir.
 TWENTY_LIMIT = 20
+FUTURE_DAY_CANDIDATES = int(os.getenv("DAILY_PICKS_FUTURE_DAY_CANDIDATES", "45"))
 TWENTY_DAYS = 3
 # Uygunluk eşikleri ve "ölçülen gerçek isabet" tahmini (model_log, ~1300 maç): modelin Üst/KG olasılıkları sayısal olarak
 # yüksek görünür ama gerçekte 1X2 favorisinden az tutar; bu yüzden seçim ham olasılığa değil ölçülen isabete göre yapılır.
@@ -213,10 +214,12 @@ class DailyPicksService:
         ht_others = [f for f in others if f.match_id in open_ht]
         rest = [f for f in others if f.match_id not in open_ht]
 
-        picked = self._round_robin(major, MAX_HT_LEAGUES, MAX_CANDIDATES)
+        # Gelecek günler (20'li kart) bugünkü kadar derin taranmaz: hız sınırı yüzünden ilk 3 günlük liste geç kalmasın.
+        limit_n = MAX_CANDIDATES if target <= istanbul_today() else FUTURE_DAY_CANDIDATES
+        picked = self._round_robin(major, MAX_HT_LEAGUES, limit_n)
         for group, cap in ((ht_others, MAX_LEAGUES), (rest, MAX_LEAGUES)):
-            if len(picked) < MAX_CANDIDATES:
-                picked += self._round_robin(group, cap, MAX_CANDIDATES - len(picked))
+            if len(picked) < limit_n:
+                picked += self._round_robin(group, cap, limit_n - len(picked))
         return picked, total
 
     @staticmethod
@@ -255,6 +258,14 @@ class DailyPicksService:
         )
 
     async def _build_pool(self, key: str, target: date) -> None:
+        from app.core import api_gate
+        api_gate.pool_enter()
+        try:
+            await self._build_pool_inner(key, target)
+        finally:
+            api_gate.pool_exit()
+
+    async def _build_pool_inner(self, key: str, target: date) -> None:
         pool = _Pool(analyzed=[], total_fixtures=0, selected=0, truncated=True)
         _pool_live[key] = pool
         try:
@@ -521,10 +532,11 @@ class DailyPicksService:
             pools = []
             for off in range(TWENTY_DAYS):
                 key = (istanbul_today() + timedelta(days=off)).isoformat()
-                pool = _analysis_pool_cache.get(key) or _pool_live.get(key)
-                if pool is not None and pool.analyzed:
-                    pools.append(pool)
-            if not pools:
+                pool = _analysis_pool_cache.get(key)
+                if pool is None:
+                    return  # 3 günün analizi tamamlanmadan liste yayınlanmaz (yalnızca bugünün maçlarıyla kalmasın)
+                pools.append(pool)
+            if not any(p.analyzed for p in pools):
                 return
             resp = self._assemble_twenty(pools)
             await accuracy._db("POST", "daily_picks_snapshot", params={"on_conflict": "target_date,category"},

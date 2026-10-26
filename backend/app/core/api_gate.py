@@ -25,15 +25,16 @@ low: contextvars.ContextVar[bool] = contextvars.ContextVar("api_gate_low", defau
 picks: contextvars.ContextVar[bool] = contextvars.ContextVar("api_gate_picks", default=False)
 _fg_waiting = 0
 _pk_waiting = 0
+_pk_active = 0  # kart havuzu kurulurken: ölçüm/veri toplama ve arka plan işleri tümüyle bekler
 _bg_waiting = 0
 
 
 async def acquire() -> None:
-    global _lock, _fg_waiting, _pk_waiting, _bg_waiting
+    global _lock, _fg_waiting, _pk_waiting, _bg_waiting, _pk_active
     if _lock is None:
         _lock = asyncio.Lock()
     if low.get():
-        while _fg_waiting > 0 or _pk_waiting > 0 or _bg_waiting > 0:
+        while _fg_waiting > 0 or _pk_waiting > 0 or _bg_waiting > 0 or _pk_active > 0:
             await asyncio.sleep(1.0)
         await _take()
         return
@@ -49,7 +50,7 @@ async def acquire() -> None:
     if background.get():
         _bg_waiting += 1
         try:
-            while _fg_waiting > 0 or _pk_waiting > 0:
+            while _fg_waiting > 0 or _pk_waiting > 0 or _pk_active > 0:
                 await asyncio.sleep(0.5)
             await _take()
         finally:
@@ -83,3 +84,13 @@ def on_ok() -> None:
     if _state["ok"] >= 15 and _state["interval"] > _BASE:
         _state["interval"] = max(_BASE, _state["interval"] * 0.9)
         _state["ok"] = 0
+
+
+def pool_enter() -> None:
+    global _pk_active
+    _pk_active += 1
+
+
+def pool_exit() -> None:
+    global _pk_active
+    _pk_active = max(0, _pk_active - 1)
