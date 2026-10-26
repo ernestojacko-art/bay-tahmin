@@ -258,12 +258,6 @@ class DailyPicksService:
         if pool.analyzed:
             await self._save_snapshots(target, pool)
             await self._save_twenty()
-            # 2. aşama: günlük liste yalnızca 1X2 taşır; Alt/Üst, KG ve handikap oranlarını (Sürpriz kartı ve
-            # İdeal'in Üst/KG seçimleri için gerekli) başlama saati yakın olandan başlayarak ekler.
-            try:
-                await self._enrich_pool(target, pool)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("daily_picks: oran zenginleştirme hatası: %s", exc)
 
     async def _enrich_pool(self, target: date, pool: "_Pool") -> None:
         items = sorted(pool.analyzed, key=lambda i: i.fixture.kickoff)
@@ -472,7 +466,16 @@ class DailyPicksService:
                     seen.add(item.fixture.match_id)
                     cands.append(pick)
         cands.sort(key=lambda c: c.model_probability, reverse=True)
-        top = sorted(cands[:TWENTY_LIMIT], key=lambda c: c.kickoff)
+        # 3 güne yayılım: gün başına kota (7/7/6); boş kalan yer en iyi kalan adaylarla doldurulur.
+        today = istanbul_today()
+        quota = [7, 7, 6]
+        chosen: list[PickCandidate] = []
+        for day in range(TWENTY_DAYS):
+            day_c = [c for c in cands if (c.kickoff.astimezone(ISTANBUL).date() - today).days == day]
+            chosen += day_c[:quota[day]]
+        ids = {c.match_id for c in chosen}
+        chosen += [c for c in cands if c.match_id not in ids][:TWENTY_LIMIT - len(chosen)]
+        top = sorted(chosen[:TWENTY_LIMIT], key=lambda c: c.kickoff)
         note = None
         if len(top) < TWENTY_LIMIT:
             note = (f"Kriterleri karşılayan {len(top)} seçim bulundu ({considered} maç analiz edildi); "
@@ -567,6 +570,16 @@ class DailyPicksService:
                 except Exception as exc:
                     logger.warning("daily_picks: önhesaplama hatası (%s): %s", target, exc)
             await self._save_twenty()
+            # 2. aşama (3 günün analizi bittikten SONRA): günlük liste yalnızca 1X2 taşır; Alt/Üst, KG ve handikap
+            # oranları (Sürpriz kartı için gerekli) bugünden başlayarak eklenir.
+            for offset in range(TWENTY_DAYS):
+                target = istanbul_today() + timedelta(days=offset)
+                pool = _analysis_pool_cache.get(target.isoformat())
+                if pool is not None and pool.analyzed:
+                    try:
+                        await self._enrich_pool(target, pool)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("daily_picks: oran zenginleştirme hatası: %s", exc)
             await asyncio.sleep(PRECOMPUTE_INTERVAL_SECONDS)
 
     async def build(self, category: str, target: date, limit: int = 4) -> DailyPicksResponse:
