@@ -273,6 +273,12 @@ async def picks_surprise(date: str | None = Query(default=None)):
     return result.model_dump(mode="json")
 
 
+@app.get("/picks/twenty", tags=["daily-picks"])
+async def picks_twenty():
+    result = await get_daily_picks_service().build("twenty", istanbul_today())
+    return result.model_dump(mode="json")
+
+
 @app.get("/picks/iyms-surprise", tags=["daily-picks"])
 async def picks_iyms_surprise(date: str | None = Query(default=None)):
     result = await get_daily_picks_service().build("iyms_surprise", _target_date(date))
