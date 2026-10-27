@@ -21,9 +21,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.cache.cache import TTLCache
@@ -76,7 +78,20 @@ _CATEGORIES = ("ideal", "surprise", "iyms_surprise")
 # 20'li kart: önümüzdeki 3 günün maçlarından 1X2 / KG / 2.5 Alt-Üst karışık 20 seçim; hedef (%60) bu kart üzerinden izlenir.
 TWENTY_LIMIT = 20
 FUTURE_DAY_CANDIDATES = int(os.getenv("DAILY_PICKS_FUTURE_DAY_CANDIDATES", "45"))
-TWENTY_DAYS = 3
+PRECOMPUTE_DAYS = 2
+# Hafta sonu listesi: Salı'dan Salı'ya bir "hafta" sayılır; liste o haftanın Cuma-Cumartesi-Pazar maçlarından kurulur.
+WEEKEND_CAPS = (60, 100, 150)            # gün başına en çok bu kadar aday maç (20 seçim dolana kadar kademeli artar)
+WEEKEND_POOL_REFRESH_SECONDS = 6 * 3600
+WEEKEND_LOOP_SECONDS = 20 * 60
+_weekend_pools: dict[str, "_Pool"] = {}
+_weekend_ts: dict[str, float] = {}
+
+
+def weekend_days(today: date | None = None) -> list[date]:
+    """Geçerli haftanın (Salı başlangıçlı) Cuma, Cumartesi ve Pazar günleri."""
+    d = today or istanbul_today()
+    anchor = d - timedelta(days=(d.weekday() - 1) % 7)  # en son Salı
+    return [anchor + timedelta(days=k) for k in (3, 4, 5)]
 # Uygunluk eşikleri ve "ölçülen gerçek isabet" tahmini (model_log, ~1300 maç): modelin Üst/KG olasılıkları sayısal olarak
 # yüksek görünür ama gerçekte 1X2 favorisinden az tutar; bu yüzden seçim ham olasılığa değil ölçülen isabete göre yapılır.
 TWENTY_MIN_PROB = {"1x2": 0.55, "over": 0.70, "under": 0.70, "btts_yes": 0.60}
@@ -137,9 +152,9 @@ _ACCURACY_MARKET_CODES = {
 
 _DISCLAIMERS = {
     "twenty": (
-        "[20'li Kart] Önümüzdeki 3 günün maçlarından, modelin Maç Sonucu, Karşılıklı Gol ve 2.5 Alt/Üst "
+        "[20'li Kart] Haftanın Cuma, Cumartesi ve Pazar maçlarından, modelin Maç Sonucu, Karşılıklı Gol ve 2.5 Alt/Üst "
         "içinde en yüksek olasılıkla desteklediği 20 seçim (her maçtan en fazla bir seçim). Seçimler "
-        "başarı hedefi (%60) için ayrı takip edilir; garanti/banko anlamına gelmez."
+        "başarı hedefi (%60) için ayrı takip edilir. Liste her Salı yeni hafta sonu için yenilenir; başlayan maçların seçimleri sabit kalır. Garanti/banko anlamına gelmez."
     ),
     "ideal": (
         "[İdeal 4'lü] Bu 4 seçim, günün gerçek açık marketli maçları arasından, modelin "
@@ -183,7 +198,7 @@ class DailyPicksService:
     def __init__(self, analysis_service: AnalysisService):
         self._service = analysis_service
 
-    async def _future_fixtures(self, target: date) -> tuple[list[Fixture], int]:
+    async def _future_fixtures(self, target: date, cap: int | None = None) -> tuple[list[Fixture], int]:
         provider = self._service._provider
         try:
             # Yalnızca başlamamış maçlar: biten maçlar da çekilince liste ~2 kat sayfa tutuyordu.
@@ -215,7 +230,7 @@ class DailyPicksService:
         rest = [f for f in others if f.match_id not in open_ht]
 
         # Gelecek günler (20'li kart) bugünkü kadar derin taranmaz: hız sınırı yüzünden ilk 3 günlük liste geç kalmasın.
-        limit_n = MAX_CANDIDATES if target <= istanbul_today() else FUTURE_DAY_CANDIDATES
+        limit_n = cap or (MAX_CANDIDATES if target <= istanbul_today() else FUTURE_DAY_CANDIDATES)
         picked = self._round_robin(major, MAX_HT_LEAGUES, limit_n)
         for group, cap in ((ht_others, MAX_LEAGUES), (rest, MAX_LEAGUES)):
             if len(picked) < limit_n:
@@ -284,7 +299,6 @@ class DailyPicksService:
             _pool_tasks.pop(key, None)
         if pool.analyzed:
             await self._save_snapshots(target, pool)
-            await self._save_twenty()
 
     async def _enrich_pool(self, target: date, pool: "_Pool") -> None:
         items = sorted(pool.analyzed, key=lambda i: i.fixture.kickoff)
@@ -478,28 +492,46 @@ class DailyPicksService:
                            f"yaklaşık %{est*100:.0f} tuttu. ") + (pred.analysis_rationale or ""))))
         return out
 
-    def _assemble_twenty(self, pools: list["_Pool"]) -> DailyPicksResponse:
+    def _assemble_twenty(self, pools: list["_Pool"], days: list[date], locked: list[PickCandidate] | None = None) -> DailyPicksResponse:
         now = datetime.now(timezone.utc)
+        locked = list(locked or [])
         cands: list[tuple[float, str, PickCandidate]] = []
         considered = 0
+        locked_ids = {p.match_id for p in locked}
         for pool in pools:
+            if pool is None:
+                continue
             for item in pool.analyzed:
                 considered += 1
-                if item.fixture.kickoff <= now:
+                if item.fixture.kickoff <= now or item.fixture.match_id in locked_ids:
                     continue
                 cands.extend(self._twenty_options(item))
         cands.sort(key=lambda c: c[0], reverse=True)
-        today = istanbul_today()
-        chosen: list[PickCandidate] = []
-        used: set[str] = set()
+        chosen: list[PickCandidate] = list(locked)
+        used: set[str] = set(locked_ids)
         by_kind: Counter = Counter()
         by_day: Counter = Counter()
+
+        def day_of(c: PickCandidate) -> int:
+            d = c.kickoff.astimezone(ISTANBUL).date()
+            return days.index(d) if d in days else len(days) - 1
+
+        def kind_of(c: PickCandidate) -> str:
+            if c.market == "Maç Sonucu (1X2)":
+                return "1x2"
+            if c.market == "Karşılıklı Gol (KG)":
+                return "btts_yes"
+            return "over" if "Üst" in c.selection else "under"
+
+        for c in locked:
+            by_kind[kind_of(c)] += 1
+            by_day[day_of(c)] += 1
 
         def take(relax_days: bool) -> None:
             for _est, kind, c in cands:
                 if len(chosen) >= TWENTY_LIMIT:
                     return
-                day = min(max((c.kickoff.astimezone(ISTANBUL).date() - today).days, 0), TWENTY_DAYS - 1)
+                day = day_of(c)
                 if c.match_id in used or by_kind[kind] >= TWENTY_TYPE_CAP[kind]:
                     continue
                 if not relax_days and by_day[day] >= TWENTY_DAY_QUOTA[day]:
@@ -513,80 +545,139 @@ class DailyPicksService:
         if len(top) < TWENTY_LIMIT:
             note = (f"Kriterleri karşılayan {len(top)} seçim bulundu ({considered} maç analiz edildi); "
                     "eksik kalan seçimler uydurma ile doldurulmadı.")
-        if any(p.truncated for p in pools):
+        if any(p is not None and p.truncated for p in pools):
             note = ((note + " ") if note else "") + "Analiz arka planda sürüyor; sonuçlar hazır oldukça güncellenecek."
         return DailyPicksResponse(
-            generated_at=now, target_date=istanbul_today(), category="twenty", picks=top,
+            generated_at=now, target_date=days[0], category="twenty", picks=top,
             candidates_considered=considered, disclaimer=_DISCLAIMERS["twenty"], note=note,
         )
 
-    async def _twenty_pools(self, wait: float | None) -> list["_Pool"]:
-        pools = []
-        for off in range(TWENTY_DAYS):
-            pools.append(await self._get_pool(istanbul_today() + timedelta(days=off), wait=wait))
-        return pools
-
-    async def _save_twenty(self) -> None:
-        """Önbellekteki (hazır) havuzlardan 20'li kartı üretir, Supabase'e yazar ve takibe kaydeder."""
+    # ---------------------------------------------------------------- hafta sonu 20'li kartı
+    async def _weekend_snapshot(self, friday: date):
         try:
-            pools = []
-            for off in range(TWENTY_DAYS):
-                key = (istanbul_today() + timedelta(days=off)).isoformat()
-                pool = _analysis_pool_cache.get(key)
-                if pool is None:
-                    return  # 3 günün analizi tamamlanmadan liste yayınlanmaz (yalnızca bugünün maçlarıyla kalmasın)
-                pools.append(pool)
-            if not any(p.analyzed for p in pools):
-                return
-            resp = self._assemble_twenty(pools)
+            rows = await accuracy._db("GET", "daily_picks_snapshot", params={
+                "target_date": f"eq.{friday.isoformat()}", "category": "eq.twenty:20", "select": "payload,updated_at"})
+        except Exception:  # noqa: BLE001
+            return None
+        if not rows:
+            return None
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(str(rows[0]["updated_at"]).replace("Z", "+00:00"))).total_seconds()
+        return DailyPicksResponse.model_validate(rows[0]["payload"]), age
+
+    async def _save_weekend(self) -> int:
+        """Havuzlardan listeyi üretir (başlamış maçların seçimlerini sabit tutar), Supabase'e yazar ve takibe kaydeder."""
+        days = weekend_days()
+        pools = [_weekend_pools.get(d.isoformat()) for d in days]
+        if not any(p is not None and p.analyzed for p in pools):
+            return 0
+        now = datetime.now(timezone.utc)
+        prev = await self._weekend_snapshot(days[0])
+        locked = [p for p in prev[0].picks if p.kickoff <= now] if prev else []
+        resp = self._assemble_twenty(pools, days, locked)
+        if not resp.picks:
+            return 0
+        try:
             await accuracy._db("POST", "daily_picks_snapshot", params={"on_conflict": "target_date,category"},
-                               json_body=[{"target_date": istanbul_today().isoformat(), "category": "twenty:20",
+                               json_body=[{"target_date": days[0].isoformat(), "category": "twenty:20",
                                            "payload": resp.model_dump(mode="json"),
-                                           "updated_at": datetime.now(timezone.utc).isoformat()}], prefer=True)
+                                           "updated_at": now.isoformat()}], prefer=True)
             await self._record_for_accuracy(resp.picks, "twenty")
-            logger.info("daily_picks: 20'li kart kaydedildi (%d seçim)", len(resp.picks))
+            logger.info("daily_picks: hafta sonu 20'li kart kaydedildi (%d seçim, hafta sonu %s)", len(resp.picks), days[0])
         except Exception as exc:  # noqa: BLE001
             logger.warning("daily_picks: 20'li kart kaydedilemedi: %s", exc)
+            return 0
+        return len(resp.picks)
 
-    async def _build_twenty(self) -> DailyPicksResponse:
-        now = datetime.now(timezone.utc)
+    async def _weekend_fill(self, target: date, cap: int) -> None:
+        """Bir günün aday maçlarını (en çok `cap`) analiz eder; sonuçlar canlı havuza eklenir ve zaman zaman yayınlanır."""
+        key = target.isoformat()
+        pool = _weekend_pools.get(key)
+        if pool is None or time.time() - _weekend_ts.get(key, 0) > WEEKEND_POOL_REFRESH_SECONDS:
+            pool = _Pool(analyzed=[], total_fixtures=0, selected=0, truncated=True)
+            _weekend_pools[key] = pool
+            _weekend_ts[key] = time.time()
         try:
-            # Gün dönüşünde (00:00) yeni liste hazır olana kadar boş kalmasın: en son yayınlanan listeyi
-            # (başlamamış maçlarıyla) göster; yeni liste arka planda kurulur.
-            rows = await accuracy._db("GET", "daily_picks_snapshot", params={
-                "category": "eq.twenty:20", "order": "updated_at.desc", "limit": "1",
-                "select": "payload,updated_at"})
-        except Exception:  # noqa: BLE001
-            rows = None
-        if rows:
-            resp = DailyPicksResponse.model_validate(rows[0]["payload"])
-            resp.picks = [p for p in resp.picks if p.kickoff > now]
-            age = (now - datetime.fromisoformat(str(rows[0]["updated_at"]).replace("Z", "+00:00"))).total_seconds()
-            if age > SNAPSHOT_REFRESH_SECONDS:
-                asyncio.create_task(self._warm_twenty())
-            if resp.picks:
-                return resp
-        asyncio.create_task(self._warm_twenty())
-        return DailyPicksResponse(
-            generated_at=now, target_date=istanbul_today(), category="twenty", picks=[], candidates_considered=0,
-            disclaimer=_DISCLAIMERS["twenty"],
-            note="Analiz arka planda sürüyor (3 günlük maçlar hazırlanıyor); sonuçlar hazır oldukça bu sayfada güncellenecek.")
+            fixtures, total = await self._future_fixtures(target, cap)
+        except BayTahminError as exc:
+            logger.warning("daily_picks: %s fikstürü alınamadı: %s", target, exc)
+            pool.failed += 1
+            return
+        pool.total_fixtures, pool.selected = total, len(fixtures)
+        done = {a.fixture.match_id for a in pool.analyzed}
+        new = 0
+        for fixture in fixtures:
+            if fixture.match_id in done:
+                continue
+            try:
+                prediction = await self._service.analyze_match(fixture.match_id, include_evidence=False)
+                dataset = await self._service.get_dataset(fixture.match_id)
+            except BayTahminError as exc:
+                pool.failed += 1
+                pool.errors[type(exc).__name__] += 1
+                done.add(fixture.match_id)
+                continue
+            pool.analyzed.append(_Analyzed(fixture=fixture, prediction=prediction, dataset=dataset))
+            done.add(fixture.match_id)
+            new += 1
+            if new % 10 == 0:
+                await self._save_weekend()
+        pool.truncated = False
+        logger.info("daily_picks: hafta sonu %s: toplam=%d seçilen=%d analiz_edilen=%d başarısız=%d",
+                    target, total, len(fixtures), len(pool.analyzed), pool.failed)
 
-    _twenty_warming = False
-
-    async def _warm_twenty(self) -> None:
+    async def _weekend_run(self) -> None:
         if DailyPicksService._twenty_warming:
             return
         DailyPicksService._twenty_warming = True
         try:
-            from app.core import api_gate
-            api_gate.picks.set(True)
-            await self._twenty_pools(wait=None)
-            await self._save_twenty()
+            for cap in WEEKEND_CAPS:
+                for d in weekend_days():
+                    await self._weekend_fill(d, cap)
+                    await self._save_weekend()
+                if await self._save_weekend() >= TWENTY_LIMIT:
+                    break
         except Exception as exc:  # noqa: BLE001
-            logger.warning("daily_picks: 20'li kart hazırlanamadı: %s", exc)
+            logger.warning("daily_picks: hafta sonu listesi hazırlanamadı: %s", exc)
         finally:
             DailyPicksService._twenty_warming = False
+
+    async def weekend_loop(self) -> None:
+        """Her Salı yeni hafta sonu (Cuma-Cumartesi-Pazar) için 20'li listeyi hazırlar; sonraki turlarda tazeler."""
+        from app.core import api_gate
+        api_gate.background.set(True)
+        api_gate.picks.set(False)
+        await asyncio.sleep(20)
+        while True:
+            await self._weekend_run()
+            await asyncio.sleep(WEEKEND_LOOP_SECONDS)
+
+    async def _build_twenty(self) -> DailyPicksResponse:
+        now = datetime.now(timezone.utc)
+        days = weekend_days()
+        snap = await self._weekend_snapshot(days[0])
+        if snap is not None:
+            resp, age = snap
+            if age > WEEKEND_POOL_REFRESH_SECONDS or len(resp.picks) < TWENTY_LIMIT:
+                asyncio.create_task(self._weekend_run())
+            return resp
+        asyncio.create_task(self._weekend_run())
+        # Yeni hafta listesi henüz hazır değil: en son yayınlanan listeyi açıkça belirterek göster (boş kalmasın).
+        try:
+            rows = await accuracy._db("GET", "daily_picks_snapshot", params={
+                "category": "eq.twenty:20", "order": "target_date.desc", "limit": "1", "select": "payload,target_date"})
+        except Exception:  # noqa: BLE001
+            rows = None
+        if rows:
+            resp = DailyPicksResponse.model_validate(rows[0]["payload"])
+            resp.note = (f"Yeni haftanın ({days[0].strftime('%d.%m')} - {days[2].strftime('%d.%m')}) listesi hazırlanıyor; "
+                         f"şimdilik {rows[0]['target_date']} hafta sonunun listesi gösteriliyor.")
+            return resp
+        return DailyPicksResponse(
+            generated_at=now, target_date=days[0], category="twenty", picks=[], candidates_considered=0,
+            disclaimer=_DISCLAIMERS["twenty"],
+            note="Hafta sonu maçları analiz ediliyor; seçimler hazır oldukça bu sayfada güncellenecek.")
+
+    _twenty_warming = False
 
     async def precompute_loop(self) -> None:
         """Sunucu ayaktayken bugünü ve yarını önceden hesaplar; kullanıcı beklemez."""
@@ -595,7 +686,7 @@ class DailyPicksService:
         api_gate.picks.set(True)  # kartlar: kullanıcı tıklamasından sonra, arka plandan önce
         await asyncio.sleep(3)
         while True:
-            for offset in range(TWENTY_DAYS):
+            for offset in range(PRECOMPUTE_DAYS):
                 target = istanbul_today() + timedelta(days=offset)
                 try:
                     pool_key = target.isoformat()
@@ -609,10 +700,9 @@ class DailyPicksService:
                         await self._get_pool(target, wait=None)
                 except Exception as exc:
                     logger.warning("daily_picks: önhesaplama hatası (%s): %s", target, exc)
-            await self._save_twenty()
             # 2. aşama (3 günün analizi bittikten SONRA): günlük liste yalnızca 1X2 taşır; Alt/Üst, KG ve handikap
             # oranları (Sürpriz kartı için gerekli) bugünden başlayarak eklenir.
-            for offset in range(TWENTY_DAYS):
+            for offset in range(PRECOMPUTE_DAYS):
                 target = istanbul_today() + timedelta(days=offset)
                 pool = _analysis_pool_cache.get(target.isoformat())
                 if pool is not None and pool.analyzed:

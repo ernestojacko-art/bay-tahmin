@@ -23,6 +23,7 @@ async def _start_picks_precompute() -> None:
     """Günlük kart sonuçlarını arka planda önceden hesaplar (kullanıcı beklemesin)."""
     import asyncio
     app.state.picks_precompute_task = asyncio.create_task(get_daily_picks_service().precompute_loop())
+    app.state.weekend_task = asyncio.create_task(get_daily_picks_service().weekend_loop())
 
     async def _warm_sportoto():
         """Spor Toto bülten analizini sunucu açılınca hazırlar (kullanıcı ilk açışta beklemesin)."""
