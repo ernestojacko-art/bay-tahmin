@@ -80,7 +80,7 @@ TWENTY_LIMIT = 20
 FUTURE_DAY_CANDIDATES = int(os.getenv("DAILY_PICKS_FUTURE_DAY_CANDIDATES", "45"))
 PRECOMPUTE_DAYS = 2
 # Hafta sonu listesi: Salı'dan Salı'ya bir "hafta" sayılır; liste o haftanın Cuma-Cumartesi-Pazar maçlarından kurulur.
-WEEKEND_CAPS = (60, 100, 150)            # gün başına en çok bu kadar aday maç (20 seçim dolana kadar kademeli artar)
+WEEKEND_CAPS = (20, 40, 60, 100, 150)            # gün başına en çok bu kadar aday maç (20 seçim dolana kadar kademeli artar)
 WEEKEND_POOL_REFRESH_SECONDS = 6 * 3600
 WEEKEND_LOOP_SECONDS = 20 * 60
 _weekend_pools: dict[str, "_Pool"] = {}
@@ -568,7 +568,8 @@ class DailyPicksService:
         """Havuzlardan listeyi üretir (başlamış maçların seçimlerini sabit tutar), Supabase'e yazar ve takibe kaydeder."""
         days = weekend_days()
         pools = [_weekend_pools.get(d.isoformat()) for d in days]
-        if not any(p is not None and p.analyzed for p in pools):
+        # Üç günün de analizi başlamadan liste yayınlanmaz: yoksa yalnızca ilk günün maçlarıyla dolar.
+        if not all(p is not None and p.analyzed for p in pools):
             return 0
         now = datetime.now(timezone.utc)
         prev = await self._weekend_snapshot(days[0])
@@ -631,11 +632,11 @@ class DailyPicksService:
             return
         DailyPicksService._twenty_warming = True
         try:
+            # Günler dönüşümlü ilerler (önce her günden 20 maç, sonra 40 ...): üç gün birlikte dolar.
             for cap in WEEKEND_CAPS:
                 for d in weekend_days():
                     await self._weekend_fill(d, cap)
-                    await self._save_weekend()
-                if await self._save_weekend() >= TWENTY_LIMIT:
+                if await self._save_weekend() >= TWENTY_LIMIT and cap >= WEEKEND_CAPS[1]:
                     break
         except Exception as exc:  # noqa: BLE001
             logger.warning("daily_picks: hafta sonu listesi hazırlanamadı: %s", exc)
