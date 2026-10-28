@@ -645,8 +645,8 @@ class DailyPicksService:
     async def weekend_loop(self) -> None:
         """Her Salı yeni hafta sonu (Cuma-Cumartesi-Pazar) için 20'li listeyi hazırlar; sonraki turlarda tazeler."""
         from app.core import api_gate
-        api_gate.background.set(True)
-        api_gate.picks.set(False)
+        api_gate.background.set(False)
+        api_gate.picks.set(True)  # günlük kartlarla aynı öncelik: arka plan işleri bu listeyi aç bırakmasın
         await asyncio.sleep(20)
         while True:
             await self._weekend_run()
