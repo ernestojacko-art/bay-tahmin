@@ -387,7 +387,8 @@ class SportotoService:
 
         async def run():
             from app.core import api_gate
-            api_gate.background.set(True)
+            api_gate.background.set(False)
+            api_gate.picks.set(True)  # kullanıcının beklediği analiz: arka plan işlerinden ve havuz kurulumundan önce
             try:
                 data = await self.compute_analysis()
                 if data.get("status") == "ready":
