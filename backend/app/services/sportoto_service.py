@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import os
 import logging
 import math
 import re
@@ -23,6 +24,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import accuracy
+import httpx
 from app.services.analysis_service import AnalysisService
 
 logger = logging.getLogger("sportoto")
@@ -141,6 +143,85 @@ class SportotoService:
             "id": "current", "season": season, "week": week, "matches": matches, "source": source,
             "updated_at": datetime.now(timezone.utc).isoformat()})
         SportotoService._analysis_cache = {"ts": 0.0, "data": None}
+
+
+    # -- NosyAPI ile haftalık bülten (otomatik)
+    NOSY_URL = "https://www.nosyapi.com/apiv2/service/bettable-matches/sporToto"
+
+    @staticmethod
+    def _parse_nosy(payload: dict[str, Any]) -> list[dict[str, Any]] | None:
+        """NosyAPI yanıtını bülten maçlarına çevirir. Beklenen biçime uymayan veri KAYDEDİLMEZ."""
+        rows = payload.get("data")
+        if not isinstance(rows, list) or len(rows) != 15:
+            return None
+        out: list[dict[str, Any]] = []
+        for i, r in enumerate(rows, start=1):
+            home, away = str(r.get("Team1") or "").strip(), str(r.get("Team2") or "").strip()
+            raw_dt = str(r.get("DateTime") or "").strip()
+            if not home or not away or not raw_dt:
+                return None
+            try:
+                dt = datetime.fromisoformat(raw_dt.replace(" ", "T"))
+            except ValueError:
+                return None
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=ISTANBUL)
+            out.append({"n": i, "home": home, "away": away, "kickoff": dt.isoformat()})
+        return out
+
+    async def refresh_bulletin(self) -> str:
+        """Güncel bülten bitmişse NosyAPI'den yeni haftanın programını çeker. Dönüş: durum açıklaması."""
+        key = os.getenv("NOSYAPI_KEY")
+        if not key:
+            return "NOSYAPI_KEY tanımlı değil"
+        current = await self.load_bulletin()
+        if current:
+            last = max(datetime.fromisoformat(m["kickoff"]) for m in current["matches"])
+            if last + timedelta(hours=4) > datetime.now(timezone.utc):
+                return "güncel bülten henüz bitmedi"
+        # Kredi tasarrufu (her çağrı 15 kredi): son çağrıdan 12 saat geçmeden tekrar sorma (yeniden başlatmada da korunur).
+        try:
+            rows = await accuracy._db("GET", "sportoto_bulletin", params={"id": "eq.nosy_check", "select": "updated_at"})
+            if rows and datetime.now(timezone.utc) - datetime.fromisoformat(str(rows[0]["updated_at"]).replace("Z", "+00:00")) < timedelta(hours=12):
+                return "NosyAPI son 12 saatte sorgulandı"
+            await accuracy._db("POST", "sportoto_bulletin", params={"on_conflict": "id"}, prefer=True, json_body={
+                "id": "nosy_check", "season": "", "week": "", "matches": [], "source": "nosyapi",
+                "updated_at": datetime.now(timezone.utc).isoformat()})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("sportoto: nosy_check okunamadı: %s", exc)
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(self.NOSY_URL, headers={"X-NSYP": key})
+        if resp.status_code != 200:
+            return f"NosyAPI yanıtı {resp.status_code}"
+        matches = self._parse_nosy(resp.json())
+        if matches is None:
+            return "NosyAPI yanıtı beklenen 15 maçlık biçimde değil"
+        if current:
+            same = {(m["home"], m["away"]) for m in current["matches"]} == {(m["home"], m["away"]) for m in matches}
+            if same:
+                return "NosyAPI hâlâ eski haftayı veriyor"
+            try:
+                week = str(int(current["week"]) + 1)
+            except (TypeError, ValueError):
+                week = ""
+            season = current["season"]
+        else:
+            week, season = "", ""
+        await self.save_bulletin(season, week, matches, source="NosyAPI (otomatik)")
+        self._kick_background()
+        logger.info("sportoto: yeni bülten NosyAPI'den alındı (hafta %s)", week)
+        return "yeni bülten kaydedildi"
+
+    async def bulletin_loop(self) -> None:
+        from app.core import api_gate
+        api_gate.background.set(True)
+        await asyncio.sleep(45)
+        while True:
+            try:
+                logger.info("sportoto: bülten kontrolü: %s", await self.refresh_bulletin())
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("sportoto: bülten kontrolü başarısız: %s", exc)
+            await asyncio.sleep(6 * 3600)
 
     # -- eşleştirme + analiz
     async def _fixtures_for(self, matches: list[dict[str, Any]]) -> list:
