@@ -193,8 +193,23 @@ class SportotoService:
             resp = await client.get(self.NOSY_URL, headers={"X-NSYP": key})
         if resp.status_code != 200:
             return f"NosyAPI yanıtı {resp.status_code}"
-        matches = self._parse_nosy(resp.json())
+        body = resp.json()
+        matches = self._parse_nosy(body)
         if matches is None:
+            # Biçimi inceleyebilmek için yanıtın özetini (anahtar içermez) nosy_check satırına yaz.
+            try:
+                data = body.get("data") if isinstance(body, dict) else None
+                summary = {"keys": list(body)[:20] if isinstance(body, dict) else str(type(body)),
+                           "status": body.get("status") if isinstance(body, dict) else None,
+                           "message": body.get("messageTR") or body.get("message") if isinstance(body, dict) else None,
+                           "rowCount": body.get("rowCount") if isinstance(body, dict) else None,
+                           "data_type": type(data).__name__, "data_len": len(data) if hasattr(data, "__len__") else None,
+                           "sample": (data[:3] if isinstance(data, list) else data)}
+                await accuracy._db("POST", "sportoto_bulletin", params={"on_conflict": "id"}, prefer=True, json_body={
+                    "id": "nosy_check", "season": "", "week": "", "matches": summary, "source": "nosyapi-ornek",
+                    "updated_at": datetime.now(timezone.utc).isoformat()})
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("sportoto: nosy özeti yazılamadı: %s", exc)
             return "NosyAPI yanıtı beklenen 15 maçlık biçimde değil"
         if current:
             same = {(m["home"], m["away"]) for m in current["matches"]} == {(m["home"], m["away"]) for m in matches}
