@@ -149,16 +149,28 @@ class SportotoService:
     NOSY_URL = "https://www.nosyapi.com/apiv2/service/bettable-matches/sporToto"
 
     @staticmethod
+    def _split_teams(name: str) -> tuple[str, str] | None:
+        """'Ev-Deplasman' biçimini ayırır; Saint-/St- gibi tireli takım adlarını korur. Belirsizse None."""
+        protected = re.sub(r"(?i)\b(saint|st)-", lambda m: m.group(1) + "\u2060", name)
+        parts = protected.split("-")
+        if len(parts) != 2:
+            return None
+        clean = lambda t: re.sub(r"\s+", " ", t.replace("\u2060", "-").replace("A.Ş.", "").replace("A.S.", "")).strip()
+        home, away = clean(parts[0]), clean(parts[1])
+        return (home, away) if home and away else None
+
+    @staticmethod
     def _parse_nosy(payload: dict[str, Any]) -> list[dict[str, Any]] | None:
-        """NosyAPI yanıtını bülten maçlarına çevirir. Beklenen biçime uymayan veri KAYDEDİLMEZ."""
-        rows = payload.get("data")
+        """NosyAPI yanıtını (data.macListesi) bülten maçlarına çevirir. Beklenen biçime uymayan veri KAYDEDİLMEZ."""
+        data = payload.get("data")
+        rows = data.get("macListesi") if isinstance(data, dict) else None
         if not isinstance(rows, list) or len(rows) != 15:
             return None
         out: list[dict[str, Any]] = []
-        for i, r in enumerate(rows, start=1):
-            home, away = str(r.get("Team1") or "").strip(), str(r.get("Team2") or "").strip()
-            raw_dt = str(r.get("DateTime") or "").strip()
-            if not home or not away or not raw_dt:
+        for r in sorted(rows, key=lambda x: x.get("macSiraNo") or 0):
+            teams = SportotoService._split_teams(str(r.get("macAdi") or ""))
+            raw_dt = str(r.get("macTarihi") or "").strip()
+            if teams is None or not raw_dt:
                 return None
             try:
                 dt = datetime.fromisoformat(raw_dt.replace(" ", "T"))
@@ -166,7 +178,7 @@ class SportotoService:
                 return None
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=ISTANBUL)
-            out.append({"n": i, "home": home, "away": away, "kickoff": dt.isoformat()})
+            out.append({"n": len(out) + 1, "home": teams[0], "away": teams[1], "kickoff": dt.isoformat()})
         return out
 
     async def refresh_bulletin(self) -> str:
