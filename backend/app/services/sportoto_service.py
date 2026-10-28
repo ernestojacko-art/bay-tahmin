@@ -172,7 +172,8 @@ class SportotoService:
     async def _analyze_one(self, match: dict[str, Any], fixture, sem: asyncio.Semaphore) -> dict[str, Any]:
         out: dict[str, Any] = {"n": match["n"], "home": match["home"], "away": match["away"], "kickoff": match["kickoff"],
                                "available": False, "probs": None, "rationale": None, "league": None,
-                               "market": None, "confidence": None, "note": None}
+                               "market": None, "confidence": None, "note": None,
+                               "match_id": getattr(fixture, "match_id", None)}
         if fixture is None:
             out["note"] = "Bu maç için veri kaynağında eşleşen bir fikstür bulunamadı; analiz yapılamadı."
             return out
@@ -216,6 +217,26 @@ class SportotoService:
         except Exception as exc:  # noqa: BLE001
             logger.warning("sportoto: analiz kaydedilemedi: %s", exc)
         return data
+
+    @staticmethod
+    async def record_tracking(analysis: dict[str, Any]) -> int:
+        """Bülten maçlarının tek seçimlik (en olası 1/X/2) tahminini takibe kaydeder; sonuçlar otomatik işlenir."""
+        saved = 0
+        for m in analysis.get("matches", []):
+            probs, mid = m.get("probs"), m.get("match_id")
+            if not probs or not mid:
+                continue
+            best = max(range(3), key=lambda i: probs[i])
+            try:
+                ok = await accuracy.save_prediction({
+                    "match_id": mid, "kickoff": m["kickoff"], "competition": m.get("league"),
+                    "home_team": m["home"], "away_team": m["away"], "market_type": "1x2",
+                    "selection": OUTCOMES[best], "market_probability": round(probs[best], 4), "odd": None,
+                    "card": "sportoto", "week": f"{analysis.get('season')} / {analysis.get('week')}", "n": m["n"]})
+                saved += 1 if ok else 0
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("sportoto: tahmin kaydedilemedi (%s): %s", m.get("home"), exc)
+        return saved
 
     async def _load_saved_analysis(self) -> dict[str, Any] | None:
         try:

@@ -581,7 +581,8 @@ class DailyPicksService:
                                json_body=[{"target_date": days[0].isoformat(), "category": "twenty:20",
                                            "payload": resp.model_dump(mode="json"),
                                            "updated_at": now.isoformat()}], prefer=True)
-            await self._record_for_accuracy(resp.picks, "twenty")
+            # Takibe yalnızca başlamış (artık değişmeyecek) seçimler yazılır: listeden çıkan seçimler başarı oranını bozmasın.
+            await self._record_for_accuracy([p for p in resp.picks if p.kickoff <= now], "twenty")
             logger.info("daily_picks: hafta sonu 20'li kart kaydedildi (%d seçim, hafta sonu %s)", len(resp.picks), days[0])
         except Exception as exc:  # noqa: BLE001
             logger.warning("daily_picks: 20'li kart kaydedilemedi: %s", exc)

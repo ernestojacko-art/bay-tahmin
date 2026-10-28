@@ -13,7 +13,8 @@ def _headers(prefer=False):
     if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
         raise HTTPException(status_code=500, detail="Supabase servis erişimi yapılandırılmamış.")
     h={"apikey":SUPABASE_SERVICE_ROLE_KEY,"Authorization":f"Bearer {SUPABASE_SERVICE_ROLE_KEY}","Content-Type":"application/json"}
-    if prefer:h["Prefer"]="resolution=merge-duplicates,return=minimal"
+    if prefer=="ignore":h["Prefer"]="resolution=ignore-duplicates,return=minimal"
+    elif prefer:h["Prefer"]="resolution=merge-duplicates,return=minimal"
     return h
 
 async def _db(method,path,*,params=None,json_body=None,prefer=False):
@@ -27,7 +28,7 @@ async def save_prediction(candidate):
     if not kickoff:return False
     key="|".join([str(candidate.get("match_id") or ""),str(candidate.get("market_type") or candidate.get("market") or ""),str(candidate.get("selection") or ""),str(kickoff)])
     body={"prediction_key":hashlib.md5(key.encode("utf-8")).hexdigest(),"external_match_id":int(candidate["match_id"]),"kickoff_at":kickoff,"competition_name":candidate.get("competition") or "","home_team":candidate.get("home_team") or "","away_team":candidate.get("away_team") or "","prediction_type":candidate.get("market_type") or "unknown","prediction_value":candidate.get("selection") or "","odds":candidate.get("odd"),"confidence":candidate.get("market_probability"),"model_version":"football-agent-orchestrator-v1","source":"bay_tahmin","predicted_at":datetime.now(timezone.utc).isoformat(),"result_status":"pending","raw_prediction":candidate}
-    await _db("POST","prediction_tracking",params={"on_conflict":"prediction_key"},json_body=body,prefer=True)
+    await _db("POST","prediction_tracking",params={"on_conflict":"prediction_key"},json_body=body,prefer="ignore")  # mevcut kaydı (ve çözülmüş sonucu) ASLA sıfırlama
     return True
 
 def _side_code(prediction,value):
@@ -124,7 +125,7 @@ async def accuracy_snapshot(days=30):
     on the previous shape breaks.
     """
     since=(datetime.now(timezone.utc)-timedelta(days=days)).isoformat()
-    rows=await _db("GET","prediction_tracking",params={"select":"result_status,prediction_type,prediction_value,kickoff_at,odds,confidence,card:raw_prediction->>card","kickoff_at":f"gte.{since}","order":"kickoff_at.desc","limit":"5000"})
+    rows=await _db("GET","prediction_tracking",params={"select":"result_status,prediction_type,prediction_value,kickoff_at,odds,confidence,card:raw_prediction->>card,week:raw_prediction->>week","kickoff_at":f"gte.{since}","order":"kickoff_at.desc","limit":"5000"})
     wins=sum(1 for r in rows if r.get("result_status")=="won"); losses=sum(1 for r in rows if r.get("result_status")=="lost"); pending=sum(1 for r in rows if r.get("result_status")=="pending"); void=sum(1 for r in rows if r.get("result_status")=="void"); resolved=wins+losses
     accuracy=round(wins*100/resolved,2) if resolved else None
     sample_threshold=100
@@ -164,6 +165,15 @@ async def accuracy_snapshot(days=30):
     for b in by_card.values():
         d=b["won"]+b["lost"]; b["decided"]=d; b["accuracy_percent"]=round(b["won"]*100/d,2) if d else None
     cards["by_card"]=by_card
+    weeks:dict[str,dict]={}
+    for r in rows:
+        if r.get("card")!="sportoto":continue
+        w=weeks.setdefault(str(r.get("week") or "?"),{"won":0,"lost":0,"pending":0})
+        st=r.get("result_status")
+        if st=="won":w["won"]+=1
+        elif st=="lost":w["lost"]+=1
+        elif st=="pending":w["pending"]+=1
+    cards["sportoto_weeks"]=[{"week":k,**v,"total":15,"decided":v["won"]+v["lost"]} for k,v in sorted(weeks.items(),key=lambda kv:kv[0],reverse=True)]
 
     return {
         "cards": cards,
