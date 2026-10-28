@@ -1,0 +1,15 @@
+name: keepalive
+# Render ücretsiz sunucuları 15 dk istek gelmezse uyur; arka plan işleri (20'li kart, Spor Toto analizi,
+# sonuç çözümleme) uykuda ilerlemez. Bu iş her 10 dakikada bir sunucuları uyandırır/ayakta tutar.
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Ping API
+        run: |
+          curl -sS -m 60 -o /dev/null -w "bay-tahmin-api %{http_code}\n" https://bay-tahmin-api.onrender.com/health || true
