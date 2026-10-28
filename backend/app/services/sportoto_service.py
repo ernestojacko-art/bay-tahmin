@@ -127,6 +127,7 @@ def build_coupon(probs: list[list[float]], max_columns: int) -> dict[str, Any]:
 class SportotoService:
     _analysis_cache: dict[str, Any] = {"ts": 0.0, "data": None}
     _task: asyncio.Task | None = None
+    _tracked_weeks: set[str] = set()
 
     def __init__(self, analysis_service: AnalysisService):
         self._analysis = analysis_service
@@ -324,6 +325,7 @@ class SportotoService:
                 "source": "analiz", "updated_at": data["generated_at"]})
         except Exception as exc:  # noqa: BLE001
             logger.warning("sportoto: analiz kaydedilemedi: %s", exc)
+        await self.record_tracking(data)
         return data
 
     @staticmethod
@@ -334,6 +336,8 @@ class SportotoService:
             probs, mid = m.get("probs"), m.get("match_id")
             if not probs or not mid:
                 continue
+            if datetime.fromisoformat(m["kickoff"]) <= datetime.now(timezone.utc):
+                continue  # başlamış maça sonradan tahmin yazılmaz (gerçek öncesi tahmin değil)
             best = max(range(3), key=lambda i: probs[i])
             try:
                 ok = await accuracy.save_prediction({
@@ -368,6 +372,10 @@ class SportotoService:
             return cache["data"]
         saved = await self._load_saved_analysis()
         if saved is not None:
+            key = f"{saved.get('season')}/{saved.get('week')}"
+            if key not in SportotoService._tracked_weeks:
+                SportotoService._tracked_weeks.add(key)
+                asyncio.create_task(self.record_tracking(saved))
             age = time.time() - datetime.fromisoformat(saved["generated_at"]).timestamp()
             SportotoService._analysis_cache = {"ts": time.time() - min(age, STALE_SECONDS - 60), "data": saved}
             if age > STALE_SECONDS:
