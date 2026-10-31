@@ -45,6 +45,7 @@ PER_PAGE = 50
 # isteklerine (maç listesi, kartlar) yer bırakır: ~4-5 istek/dk.
 PAGE_DELAY_SECONDS = float(os.getenv("SURPRISE_HISTORY_PAGE_DELAY_SECONDS", "3"))
 REFRESH_AFTER_SECONDS = int(os.getenv("SURPRISE_HISTORY_REFRESH_HOURS", "12")) * 3600
+INCREMENTAL_DAYS = int(os.getenv("SURPRISE_HISTORY_INCREMENTAL_DAYS", "21"))
 PERSIST_PATH = os.getenv("SURPRISE_HISTORY_PATH", "/tmp/surprise_history.pkl")
 PERSIST_MAX_AGE_SECONDS = 48 * 3600
 PERSIST_EVERY_PAGES = 25
@@ -130,6 +131,10 @@ class HistoryPool:
             time.sleep(0.5)
 
     # ------------------------------------------------------------ internals
+    @staticmethod
+    def _kick(m: HistoricalMatch) -> str:
+        return str(m.record.kickoff_time or "")[:19]
+
     def _add(self, matches: List[HistoricalMatch]) -> int:
         added = 0
         with self._lock:
@@ -138,6 +143,11 @@ class HistoryPool:
                 if mid not in self._matches:
                     self._matches[mid] = m
                     added += 1
+            # Kayan pencere: sınır dolunca EN ESKİ maçlar çıkar, yeni biten maçlar havuza girebilsin
+            # (eskiden havuz sınırda donuyor ve son maçlar hiç eklenmiyordu).
+            if len(self._matches) > MAX_MATCHES:
+                keep = sorted(self._matches.values(), key=self._kick)[-MAX_MATCHES:]
+                self._matches = {str(x.record.match_id): x for x in keep}
             self.status["matches"] = len(self._matches)
         if added:
             self._loaded_event.set()
@@ -179,7 +189,11 @@ class HistoryPool:
             client = self._client_factory()
             client.background = True  # kullanıcı isteklerine yol ver
             now = datetime.now(timezone.utc)
-            start_ts = int((now - timedelta(days=min(max(days, 1), 730))).timestamp())
+            # Havuz zaten büyükse yalnızca son günler taranır (artımlı yenileme): tam tarama saatler sürer.
+            scan_days = min(max(days, 1), 730)
+            if self.size() >= 5000:
+                scan_days = min(scan_days, INCREMENTAL_DAYS)
+            start_ts = int((now - timedelta(days=scan_days)).timestamp())
             end_ts = int(now.timestamp())
 
             leagues = self._leagues(client, start_ts)
@@ -191,8 +205,6 @@ class HistoryPool:
             for page in range(1, MAX_PAGES_PER_LEAGUE + 1):
                 still_active: List[int] = []
                 for league_id in active:
-                    if self.size() >= MAX_MATCHES:
-                        break
                     try:
                         payload = client.league_fixtures(
                             league_id=league_id, start_time=start_ts, end_time=end_ts,
@@ -219,7 +231,7 @@ class HistoryPool:
                         self._save_to_disk()
                         logger.info("tarihsel havuz: %d maç (%d sayfa, rpm=%.1f)", self.size(), pages, current_rpm())
                 active = still_active
-                if not active or self.size() >= MAX_MATCHES:
+                if not active:
                     break
 
             self._finished_ts = time.time()
@@ -238,7 +250,14 @@ class HistoryPool:
             loaded = history_db.load_all()
             self._add(loaded)
             logger.info("tarihsel havuz Supabase'ten yüklendi: %d maç (toplam %d)", len(loaded), self.size())
-            if self.size() >= MAX_MATCHES * 0.9:
+            newest = max((self._kick(m) for m in self.matches()), default="")
+            fresh_enough = False
+            try:
+                fresh_enough = bool(newest) and (datetime.now(timezone.utc) - datetime.fromisoformat(newest).replace(tzinfo=timezone.utc)) < timedelta(hours=36)
+            except ValueError:
+                pass
+            logger.info("tarihsel havuz: en yeni maç %s, taze=%s", newest, fresh_enough)
+            if self.size() >= MAX_MATCHES * 0.9 and fresh_enough:
                 self._finished_ts = time.time()
                 self.status["state"] = "complete"
         except Exception as exc:
@@ -266,7 +285,7 @@ class HistoryPool:
             self._add(list(blob.get("matches", [])))
             # Yeterince büyük/tam havuz diskten geldiyse yeniden yükleme: istek hakkını
             # kullanıcı analizlerine bırak.
-            if blob.get("complete") or self.size() >= MAX_MATCHES * 0.9:
+            if (blob.get("complete") or self.size() >= MAX_MATCHES * 0.9) and time.time() - float(blob.get("saved_at", 0)) < 36 * 3600:
                 self._finished_ts = float(blob.get("saved_at", 0))
                 self.status["state"] = "complete"
             logger.info("tarihsel havuz diskten yüklendi: %d maç", self.size())

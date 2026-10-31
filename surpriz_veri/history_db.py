@@ -113,7 +113,7 @@ def load_all(limit: int = 50000) -> List[HistoricalMatch]:
     while offset < limit:
         try:
             resp = requests.get(
-                f"{url}/rest/v1/{TABLE}?select=payload&order=match_id.asc&limit={PAGE}&offset={offset}",
+                f"{url}/rest/v1/{TABLE}?select=payload&order=kickoff_time.desc&limit={PAGE}&offset={offset}",
                 headers=_headers(key), timeout=60,
             )
         except requests.RequestException as exc:

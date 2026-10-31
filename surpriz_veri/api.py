@@ -436,6 +436,17 @@ def _warm_on_startup() -> None:
         logger.warning("havuz başlangıç yüklemesi başarısız: %s", exc)
     threading.Thread(target=_week_warm_loop, name="week-warm", daemon=True).start()
 
+    def _refresh_history() -> None:
+        # Supabase yüklemesi bitince havuz bayatsa (son maçlar eksikse) artımlı yenilemeyi başlat.
+        try:
+            pool = _history_pool()
+            pool._db_ready.wait(timeout=300)
+            pool.ensure_started(CONFIG.historical_days)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("havuz yenileme başlatılamadı: %s", exc)
+
+    threading.Thread(target=_refresh_history, name="history-refresh", daemon=True).start()
+
 
 @app.get("/analyze/{fixture_id}")
 def analyze(
