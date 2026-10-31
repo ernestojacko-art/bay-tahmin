@@ -24,6 +24,7 @@ from app.schemas.prediction import MatchPrediction
 
 _log = logging.getLogger("analysis_store")
 STORE_MAX_AGE_SECONDS = 6 * 3600  # bu süreden sonra kayıt "bayat" sayılır ve arka planda yenilenir
+ODDS_FRESH_SECONDS = 20 * 60  # kullanıcının açtığı (kanıtlı) analizde, başlamamış maçın oranı bundan eskiyse yenilenir
 STORE_HARD_MAX_AGE_SECONDS = 36 * 3600  # bayat da olsa bu süreye kadar ANINDA gösterilir (kullanıcı beklemez)
 _refreshing: set[str] = set()
 _refresh_sem: asyncio.Semaphore | None = None
@@ -174,6 +175,19 @@ class AnalysisService:
                         asyncio.create_task(_store_save(f"{base}:full2", noev))
                     stored = noev
             if stored is not None:
+                # Kullanıcının açtığı analizde ESKİ ORAN gösterilmez: başlamamış maçın kayıtlı verisi 20 dakikadan
+                # eskiyse oranlar/veri sınırlı süre içinde (12 sn) tazelenir; olmazsa kayıtlı sonuç gösterilir.
+                if include_evidence and age is not None and age > ODDS_FRESH_SECONDS:
+                    try:
+                        ds = await asyncio.wait_for(self.get_dataset(match_id, use_cache=False), 12)
+                        if ds.fixture.kickoff > datetime.now(timezone.utc):
+                            fresh = self._prediction_engine.analyze(ds)
+                            fresh.historical_evidence = stored.historical_evidence
+                            match_analysis_cache.set(cache_key, fresh, self._settings.match_analysis_cache_ttl_seconds)
+                            asyncio.create_task(_store_save(f"{base}:full2", fresh))
+                            return fresh
+                    except Exception as exc:  # noqa: BLE001
+                        _log.debug("oran tazeleme başarısız (%s): %s", match_id, exc)
                 if age is not None and age > STORE_MAX_AGE_SECONDS:
                     self._schedule_refresh(match_id, include_evidence)
                 match_analysis_cache.set(cache_key, stored, self._settings.match_analysis_cache_ttl_seconds)
