@@ -39,6 +39,17 @@ async def _start_picks_precompute() -> None:
     from app.services.sportoto_service import SportotoService as _ST
     app.state.sportoto_bulletin_task = asyncio.create_task(_ST(get_analysis_service()).bulletin_loop())
 
+    async def _odds_diag():
+        await asyncio.sleep(90)
+        try:
+            from app.services import odds_diag
+            await odds_diag.run(get_analysis_service()._provider)
+        except Exception as exc:  # noqa: BLE001
+            import logging
+            logging.getLogger("odds_diag").warning("odds_diag başarısız: %s", exc)
+
+    app.state.odds_diag_task = asyncio.create_task(_odds_diag())
+
     from app.services.warm_service import warm_loop
     app.state.match_warm_task = asyncio.create_task(warm_loop(get_analysis_service()))
 
