@@ -14,7 +14,7 @@ from app.core.major_leagues import is_major_league
 from app.services.fixture_selection import istanbul_today
 
 logger = logging.getLogger("odds_diag")
-KEY = "diag:odds:v1"
+KEY = "diag:odds:v2"
 
 
 def _short(obj, n=2500):
@@ -55,7 +55,6 @@ async def run(provider) -> None:
                 "A_detail_include_odds": (f"fixtures/{mid}", {"include": "odds", "lang": "en"}),
                 "B_odds_default(ana site)": (f"fixtures/{mid}/odds", {"lang": "en"}),
                 "C_odds_bet365(Surpriz)": (f"fixtures/{mid}/odds", {"bookmakers": "bet365", "lang": "en"}),
-                "D_history_bet365": (f"fixtures/{mid}/odds/history", {"bookmaker": "bet365", "market": "1x2", "per_page": 500}),
             }
             for name, (path, params) in calls.items():
                 try:
@@ -69,10 +68,15 @@ async def run(provider) -> None:
                         item[name] = _short({"n": len(pts) if isinstance(pts, list) else None,
                                              "first": pts[0] if pts else None, "last": pts[-1] if pts else None})
                     else:
-                        odds = data.get("odds") if isinstance(data, dict) else data
-                        item[name] = _short({"1x2": _one_x_two(odds) if isinstance(odds, dict) else None,
-                                             "top_keys": list(data)[:10] if isinstance(data, dict) else type(data).__name__,
-                                             "raw_head": _short(odds, 600)})
+                        books = data.get("bookmakers") if isinstance(data, dict) else None
+                        summ = []
+                        for b in (books if isinstance(books, list) else []):
+                            if not isinstance(b, dict):
+                                continue
+                            bo = b.get("odds") if isinstance(b.get("odds"), dict) else {}
+                            summ.append({"name": b.get("name") or b.get("slug"), "keys": [k for k in b if k != "odds"],
+                                         "1x2": _one_x_two(bo)})
+                        item[name] = _short({"n_books": len(summ), "books": summ}, 3500)
                 except Exception as exc:  # noqa: BLE001
                     item[name] = f"hata: {type(exc).__name__}: {str(exc)[:200]}"
             out["fixtures"].append(item)
