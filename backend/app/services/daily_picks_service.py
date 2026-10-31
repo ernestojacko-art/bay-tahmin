@@ -567,14 +567,16 @@ class DailyPicksService:
     async def _save_weekend(self) -> int:
         """Havuzlardan listeyi üretir (başlamış maçların seçimlerini sabit tutar), Supabase'e yazar ve takibe kaydeder."""
         days = weekend_days()
+        now = datetime.now(timezone.utc)
+        prev = await self._weekend_snapshot(days[0])
+        if prev is not None and self._is_locked(prev[0], now):
+            await self._record_for_accuracy(list(prev[0].picks), "twenty")  # kilitli listenin tamamı takipte
+            return len(prev[0].picks)
         pools = [_weekend_pools.get(d.isoformat()) for d in days]
         # Üç günün de analizi başlamadan liste yayınlanmaz: yoksa yalnızca ilk günün maçlarıyla dolar.
         if not all(p is not None and p.analyzed for p in pools):
             return 0
-        now = datetime.now(timezone.utc)
-        prev = await self._weekend_snapshot(days[0])
-        locked = [p for p in prev[0].picks if p.kickoff <= now] if prev else []
-        resp = self._assemble_twenty(pools, days, locked)
+        resp = self._assemble_twenty(pools, days, [])
         if not resp.picks:
             return 0
         try:
@@ -582,13 +584,19 @@ class DailyPicksService:
                                json_body=[{"target_date": days[0].isoformat(), "category": "twenty:20",
                                            "payload": resp.model_dump(mode="json"),
                                            "updated_at": now.isoformat()}], prefer=True)
-            # Takibe yalnızca başlamış (artık değişmeyecek) seçimler yazılır: listeden çıkan seçimler başarı oranını bozmasın.
-            await self._record_for_accuracy([p for p in resp.picks if p.kickoff <= now], "twenty")
+            # Takibe yalnızca liste kilitlenince (ilk maç başlayınca) yazılır: listeden çıkan seçimler başarı oranını bozmasın.
+            if self._is_locked(resp, now):
+                await self._record_for_accuracy(list(resp.picks), "twenty")
             logger.info("daily_picks: hafta sonu 20'li kart kaydedildi (%d seçim, hafta sonu %s)", len(resp.picks), days[0])
         except Exception as exc:  # noqa: BLE001
             logger.warning("daily_picks: 20'li kart kaydedilemedi: %s", exc)
             return 0
         return len(resp.picks)
+
+    @staticmethod
+    def _is_locked(resp: DailyPicksResponse, now: datetime) -> bool:
+        """Listenin ilk maçı başladıysa liste KİLİTLİDİR: artık maç eklenmez/çıkarılmaz, sonuçlar takip edilir."""
+        return bool(resp.picks) and min(p.kickoff for p in resp.picks) <= now
 
     async def _weekend_fill(self, target: date, cap: int) -> None:
         """Bir günün aday maçlarını (en çok `cap`) analiz eder; sonuçlar canlı havuza eklenir ve zaman zaman yayınlanır."""
@@ -630,6 +638,10 @@ class DailyPicksService:
     async def _weekend_run(self) -> None:
         if DailyPicksService._twenty_warming:
             return
+        snap = await self._weekend_snapshot(weekend_days()[0])
+        if snap is not None and self._is_locked(snap[0], datetime.now(timezone.utc)):
+            await self._save_weekend()  # yalnızca takibe yazar
+            return
         DailyPicksService._twenty_warming = True
         try:
             # Günler dönüşümlü ilerler (önce her günden 20 maç, sonra 40 ...): üç gün birlikte dolar.
@@ -659,6 +671,12 @@ class DailyPicksService:
         snap = await self._weekend_snapshot(days[0])
         if snap is not None:
             resp, age = snap
+            if self._is_locked(resp, now):
+                if days[0].isoformat() not in DailyPicksService._locked_recorded:
+                    DailyPicksService._locked_recorded.add(days[0].isoformat())
+                    asyncio.create_task(self._weekend_run())  # kilitli listeyi takibe yazar
+                resp.note = await self._weekend_result_note(resp)
+                return resp
             if age > WEEKEND_POOL_REFRESH_SECONDS or len(resp.picks) < TWENTY_LIMIT:
                 asyncio.create_task(self._weekend_run())
             return resp
@@ -680,6 +698,26 @@ class DailyPicksService:
             note="Hafta sonu maçları analiz ediliyor; seçimler hazır oldukça bu sayfada güncellenecek.")
 
     _twenty_warming = False
+    _locked_recorded: set[str] = set()
+
+    async def _weekend_result_note(self, resp: DailyPicksResponse) -> str:
+        """Kilitli listenin gerçekleşen sonuç özeti (takip tablosundan)."""
+        total = len(resp.picks)
+        won = lost = 0
+        try:
+            ids = ",".join(str(p.match_id) for p in resp.picks)
+            rows = await accuracy._db("GET", "prediction_tracking", params={
+                "external_match_id": f"in.({ids})", "raw_prediction->>card": "eq.twenty",
+                "select": "result_status,prediction_value"})
+            won = sum(1 for r in rows if r.get("result_status") == "won")
+            lost = sum(1 for r in rows if r.get("result_status") == "lost")
+        except Exception:  # noqa: BLE001
+            pass
+        decided = won + lost
+        head = f"Liste kilitlendi: ilk maç başladığı için artık maç eklenmez veya değişmez ({total} seçim)."
+        if decided:
+            return f"{head} Sonuçlanan {decided} seçimden {won} tanesi tuttu (%{won * 100 / decided:.0f}); {total - decided} seçim bekleniyor."
+        return f"{head} Sonuçlar maçlar bittikçe işlenecek."
 
     async def precompute_loop(self) -> None:
         """Sunucu ayaktayken bugünü ve yarını önceden hesaplar; kullanıcı beklemez."""
