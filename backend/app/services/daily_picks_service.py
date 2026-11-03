@@ -70,6 +70,7 @@ IYMS_MIN_SWING_PROBABILITY = float(os.getenv("IYMS_MIN_SWING_PROBABILITY", "0.02
 # her adet için hazır sonuç Supabase'e yazılır. İstek bu snapshot'ı ANINDA okur (yeniden
 # deploy / uyku sonrası da kaybolmaz); bayatlamışsa eski sonuç gösterilirken arka planda yenilenir.
 SNAPSHOT_LIMITS = tuple(range(1, 13))
+FROZEN_LIMIT = 4  # günlük kartlar sade 4 maç, tek seferlik
 # Bu andan ÖNCE yazılmış snapshot'lar eski seçim kurallarıyla üretildi (ör. düşük oranlı çifte şans); yok sayılır.
 SNAPSHOT_MIN_UPDATED = datetime(2026, 10, 26, 8, 10, tzinfo=timezone.utc)
 SNAPSHOT_REFRESH_SECONDS = int(os.getenv("DAILY_PICKS_SNAPSHOT_REFRESH_MINUTES", "90")) * 60
@@ -386,8 +387,26 @@ class DailyPicksService:
         try:
             now = datetime.now(timezone.utc).isoformat()
             rows = []
+            # Günlük 4'lü kartlar tek seferlik: bir kez 4 maçla yayınlandıktan sonra ASLA değişmez/yenilenmez.
+            frozen: set[str] = set()
+            try:
+                ex = await accuracy._db(
+                    "GET", "daily_picks_snapshot",
+                    params={"target_date": f"eq.{target.isoformat()}", "select": "category,payload,updated_at"},
+                )
+                for r in ex or []:
+                    cat, _, lim = str(r["category"]).partition(":")
+                    upd = datetime.fromisoformat(str(r["updated_at"]).replace("Z", "+00:00"))
+                    if (lim == str(FROZEN_LIMIT) and upd >= SNAPSHOT_MIN_UPDATED
+                            and len((r.get("payload") or {}).get("picks") or []) >= FROZEN_LIMIT):
+                        frozen.add(cat)
+            except Exception:
+                pass
+            complete = not pool.truncated
             for category in _CATEGORIES:
                 for limit in SNAPSHOT_LIMITS:
+                    if limit == FROZEN_LIMIT and (category in frozen or not complete):
+                        continue  # kilitli ya da havuz eksik: yarım liste dondurulmaz
                     resp = self._assemble(category, target, limit, pool)
                     rows.append({
                         "target_date": target.isoformat(), "category": f"{category}:{limit}",
@@ -428,6 +447,10 @@ class DailyPicksService:
             return resp, (now - updated).total_seconds()
 
         exact = by_cat.get(f"{category}:{limit}")
+        if exact and limit == FROZEN_LIMIT and category != "twenty":
+            resp, age = parse(exact)
+            if len(resp.picks) >= FROZEN_LIMIT:
+                return resp, 0.0  # kilitli: başlamış maçlar ayıklanmaz, yeni maç eklenmez
         if exact:
             resp, age = parse(exact)
             if all(p.kickoff > now for p in resp.picks):
@@ -777,7 +800,8 @@ class DailyPicksService:
         # 2) Snapshot yok: ortak havuzdan hesapla (kısa süre bekler, kalanı arka planda sürer).
         pool = await self._get_pool(target)
         result = self._assemble(category, target, limit, pool)
-        await self._record_for_accuracy(result.picks, category)
+        if not (limit == FROZEN_LIMIT and pool.truncated):
+            await self._record_for_accuracy(result.picks, category)
         analyzed = pool.analyzed
         ttl = 8 if pool.truncated else (_PARTIAL_POOL_TTL_SECONDS if (pool.failed and not analyzed) else _PICKS_CACHE_TTL_SECONDS)
         _picks_response_cache.set(cache_key, result, ttl)

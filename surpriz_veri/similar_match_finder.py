@@ -171,11 +171,27 @@ def _find(
     raise ValueError(f"Unknown similarity mode: {mode}")
 
 
+RECENT_MAX = 10  # her tabloda en fazla son 10 oynanmış maç (en az 5 önerilir)
+
+
+def _recent(
+    pairs: List[Tuple[HistoricalMatch, float]],
+) -> List[Tuple[HistoricalMatch, float]]:
+    """Eşleşenler arasından en son oynanmış RECENT_MAX maçı (yeniden eskiye) döndürür."""
+    return sorted(
+        pairs,
+        key=lambda x: str(x[0].record.kickoff_time or ""),
+        reverse=True,
+    )[:RECENT_MAX]
+
+
 def _section(
     pairs: List[Tuple[HistoricalMatch, float]],
     mode: str,
     display_limit: int,
 ) -> Dict[str, Any]:
+    display_limit = min(display_limit, RECENT_MAX)
+    pairs = _recent(pairs)
     rows = [_match_row(h, mode, distance) for h, distance in pairs]
     return {
         "match_count": len(rows),
@@ -211,6 +227,7 @@ def find_similar_matches(
 
     opening_pairs = _find(current, historical, "opening")
     closing_pairs = _find(current, historical, "closing")
+    # Ortak eşleşmeler tüm eşleşmeler üzerinden bulunur, sonra son 10'a indirilir.
 
     opening_ids = {h.record.match_id for h, _ in opening_pairs}
     closing_ids = {h.record.match_id for h, _ in closing_pairs}
@@ -233,7 +250,7 @@ def find_similar_matches(
                 / 2,
             )
         )
-    common_pairs.sort(key=lambda x: x[1])
+    common_pairs = _recent(common_pairs)
 
     opening = _section(opening_pairs, "opening", display_limit)
     closing = _section(closing_pairs, "closing", display_limit)
@@ -258,10 +275,10 @@ def find_similar_matches(
             else None
         ),
         "outcome_distribution": _distribution(comparison_rows),
-        "matches": comparison_rows[:display_limit],
+        "matches": comparison_rows[:min(display_limit, RECENT_MAX)],
         "common_outcomes": sorted(common_outcomes),
-        "opening_match_count": len(opening_pairs),
-        "closing_match_count": len(closing_pairs),
+        "opening_match_count": opening["match_count"],
+        "closing_match_count": closing["match_count"],
         "description": (
             "Aynı geçmiş maçın hem açılış oranı hem de kapanış oranı "
             "bugünkü iki karşılaştırmaya yakınsa ortak eşleşme kabul edilir."

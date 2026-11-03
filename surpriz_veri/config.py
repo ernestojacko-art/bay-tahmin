@@ -42,7 +42,7 @@ class SurpriseConfig:
 
     # Minimum tarihsel örnek sayısı.
     min_historical_samples: int = int(
-        os.getenv("SURPRISE_MIN_HISTORICAL_SAMPLES", "20")
+        os.getenv("SURPRISE_MIN_HISTORICAL_SAMPLES", "5")
     )
 
     # Kullanıcı kaç maç isterse o kadar sonuç üretilebilir.
