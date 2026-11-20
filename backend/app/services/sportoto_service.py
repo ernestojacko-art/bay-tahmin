@@ -183,6 +183,16 @@ class SportotoService:
         return out
 
     async def refresh_bulletin(self) -> str:
+        result = await self._refresh_bulletin_inner()
+        try:  # son sonucu görünür kıl (teşhis): nosy_check satırına yaz
+            await accuracy._db("PATCH", "sportoto_bulletin", params={"id": "eq.nosy_check"},
+                               json_body={"matches": {"son_sonuc": result,
+                                                      "zaman": datetime.now(timezone.utc).isoformat()}})
+        except Exception:  # noqa: BLE001
+            pass
+        return result
+
+    async def _refresh_bulletin_inner(self) -> str:
         """Güncel bülten bitmişse NosyAPI'den yeni haftanın programını çeker. Dönüş: durum açıklaması."""
         key = os.getenv("NOSYAPI_KEY")
         if not key:
@@ -195,8 +205,8 @@ class SportotoService:
         # Kredi tasarrufu (her çağrı 15 kredi): son çağrıdan 12 saat geçmeden tekrar sorma (yeniden başlatmada da korunur).
         try:
             rows = await accuracy._db("GET", "sportoto_bulletin", params={"id": "eq.nosy_check", "select": "updated_at"})
-            if rows and datetime.now(timezone.utc) - datetime.fromisoformat(str(rows[0]["updated_at"]).replace("Z", "+00:00")) < timedelta(hours=12):
-                return "NosyAPI son 12 saatte sorgulandı"
+            if rows and datetime.now(timezone.utc) - datetime.fromisoformat(str(rows[0]["updated_at"]).replace("Z", "+00:00")) < timedelta(hours=6):
+                return "NosyAPI son 6 saatte sorgulandı"
             await accuracy._db("POST", "sportoto_bulletin", params={"on_conflict": "id"}, prefer=True, json_body={
                 "id": "nosy_check", "season": "", "week": "", "matches": [], "source": "nosyapi",
                 "updated_at": datetime.now(timezone.utc).isoformat()})
