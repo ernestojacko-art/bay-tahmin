@@ -205,8 +205,8 @@ class SportotoService:
         # Kredi tasarrufu (her çağrı 15 kredi): son çağrıdan 12 saat geçmeden tekrar sorma (yeniden başlatmada da korunur).
         try:
             rows = await accuracy._db("GET", "sportoto_bulletin", params={"id": "eq.nosy_check", "select": "updated_at"})
-            if rows and datetime.now(timezone.utc) - datetime.fromisoformat(str(rows[0]["updated_at"]).replace("Z", "+00:00")) < timedelta(hours=6):
-                return "NosyAPI son 6 saatte sorgulandı"
+            if rows and datetime.now(timezone.utc) - datetime.fromisoformat(str(rows[0]["updated_at"]).replace("Z", "+00:00")) < timedelta(hours=4):
+                return "NosyAPI son 4 saatte sorgulandı"
             await accuracy._db("POST", "sportoto_bulletin", params={"on_conflict": "id"}, prefer=True, json_body={
                 "id": "nosy_check", "season": "", "week": "", "matches": [], "source": "nosyapi",
                 "updated_at": datetime.now(timezone.utc).isoformat()})
@@ -215,7 +215,7 @@ class SportotoService:
         async with httpx.AsyncClient(timeout=20.0) as client:
             resp = await client.get(self.NOSY_URL, headers={"X-NSYP": key})
         if resp.status_code != 200:
-            return f"NosyAPI yanıtı {resp.status_code}"
+            return f"NosyAPI yanıtı {resp.status_code}: {resp.text[:160]}"
         body = resp.json()
         matches = self._parse_nosy(body)
         if matches is None:
@@ -238,8 +238,11 @@ class SportotoService:
             same = {(m["home"], m["away"]) for m in current["matches"]} == {(m["home"], m["away"]) for m in matches}
             if same:
                 return "NosyAPI hâlâ eski haftayı veriyor"
-            try:
-                week = str(int(current["week"]) + 1)
+            week = ""
+            try:  # hafta numarasını NosyAPI'nin bülten adından al (atlanan hafta olursa doğru kalsın)
+                import re as _re
+                _m = _re.search(r"(\d+)", str((body.get("data") or {}).get("bultenAdi") or ""))
+                week = _m.group(1) if _m else str(int(current["week"]) + 1)
             except (TypeError, ValueError):
                 week = ""
             season = current["season"]
@@ -259,7 +262,7 @@ class SportotoService:
                 logger.info("sportoto: bülten kontrolü: %s", await self.refresh_bulletin())
             except Exception as exc:  # noqa: BLE001
                 logger.warning("sportoto: bülten kontrolü başarısız: %s", exc)
-            await asyncio.sleep(6 * 3600)
+            await asyncio.sleep(2 * 3600)
 
     # -- eşleştirme + analiz
     async def _fixtures_for(self, matches: list[dict[str, Any]]) -> list:
