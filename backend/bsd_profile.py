@@ -69,7 +69,7 @@ async def _team_profile(c: httpx.AsyncClient, team_id: int, before: datetime) ->
     scorers: dict[int, int] = {}
     goals = 0
     used = 0
-    corners = shots = poss_sum = poss_n = 0.0
+    corners = shots = throws = poss_sum = poss_n = 0.0
     for ev, st in results:
         if not isinstance(st, dict):
             continue
@@ -89,10 +89,15 @@ async def _team_profile(c: httpx.AsyncClient, team_id: int, before: datetime) ->
             goals += 1
             if s.get("player_id") is not None:
                 scorers[int(s["player_id"])] = scorers.get(int(s["player_id"]), 0) + 1
+        for pl in ((st.get("average_positions") or {}).get(side) or []):
+            if isinstance(pl, dict) and pl.get("player_id") is not None and pl.get("name"):
+                _names[int(pl["player_id"])] = str(pl["name"])
         side_stats = st.get(side) or (st.get("stats") or {}).get(side) or {}
         if isinstance(side_stats, dict):
             if isinstance(side_stats.get("corner_kicks"), (int, float)):
                 corners += side_stats["corner_kicks"]
+            if isinstance(side_stats.get("throw_ins"), (int, float)):
+                throws += side_stats["throw_ins"]
             if isinstance(side_stats.get("total_shots"), (int, float)):
                 shots += side_stats["total_shots"]
             if isinstance(side_stats.get("ball_possession"), (int, float)):
@@ -116,6 +121,7 @@ async def _team_profile(c: httpx.AsyncClient, team_id: int, before: datetime) ->
         "matches": used, "goals": goals, "kinds": kinds, "scorers": out_scorers,
         "corners_pm": round(corners / used, 1) if corners else None,
         "shots_pm": round(shots / used, 1) if shots else None,
+        "throws_pm": round(throws / used, 1) if throws else None,
         "possession": round(poss_sum / poss_n, 1) if poss_n else None,
     }
     _cache[team_id] = (time.time(), data)
