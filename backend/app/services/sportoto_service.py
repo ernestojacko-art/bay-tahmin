@@ -238,11 +238,17 @@ class SportotoService:
             same = {(m["home"], m["away"]) for m in current["matches"]} == {(m["home"], m["away"]) for m in matches}
             if same:
                 return "NosyAPI hâlâ eski haftayı veriyor"
+            # Hafta numarası: bülten adında "N. Hafta" geçiyorsa o; yoksa önceki hafta + (başlangıç tarihleri arası hafta sayısı).
+            import re as _re
             week = ""
-            try:  # hafta numarasını NosyAPI'nin bülten adından al (atlanan hafta olursa doğru kalsın)
-                import re as _re
-                _m = _re.search(r"(\d+)", str((body.get("data") or {}).get("bultenAdi") or ""))
-                week = _m.group(1) if _m else str(int(current["week"]) + 1)
+            try:
+                _m = _re.search(r"(\d+)\s*\.?\s*hafta", str((body.get("data") or {}).get("bultenAdi") or ""), _re.I)
+                if _m:
+                    week = _m.group(1)
+                else:
+                    f_old = min(datetime.fromisoformat(m["kickoff"]) for m in current["matches"])
+                    f_new = min(datetime.fromisoformat(m["kickoff"]) for m in matches)
+                    week = str(int(current["week"]) + max(1, round((f_new - f_old).days / 7)))
             except (TypeError, ValueError):
                 week = ""
             season = current["season"]
