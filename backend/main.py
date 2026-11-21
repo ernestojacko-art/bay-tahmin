@@ -40,8 +40,6 @@ async def _start_picks_precompute() -> None:
     app.state.sportoto_bulletin_task = asyncio.create_task(_ST(get_analysis_service()).bulletin_loop())
     import bsd_injuries as _bsd
     app.state.bsd_task = asyncio.create_task(_bsd.loop())
-    from bsd_probe import run_once as _bsd_probe
-    app.state.bsd_probe_task = asyncio.create_task(_bsd_probe())
 
     from app.services.warm_service import warm_loop
     app.state.match_warm_task = asyncio.create_task(warm_loop(get_analysis_service()))
@@ -347,6 +345,13 @@ async def match_injuries(home: str = Query(..., max_length=80), away: str = Quer
     """Maç için BSD kaynaklı sakat/cezalı/şüpheli oyuncular. Tahmini değiştirmez, yalnızca bilgi."""
     import bsd_injuries
     return await bsd_injuries.lookup(home, away, kickoff)
+
+
+@app.get("/simulation-profile", tags=["analysis"])
+async def simulation_profile(home: str = Query(..., max_length=80), away: str = Query(..., max_length=80), kickoff: str | None = Query(default=None, max_length=40)):
+    """Maç canlandırması için iki takımın gerçek gol türü / golcü / atak profili (BSD). Tahmini değiştirmez."""
+    import bsd_profile
+    return await bsd_profile.profile(home, away, kickoff)
 
 
 @app.get("/admin/cache/status", tags=["admin"])
