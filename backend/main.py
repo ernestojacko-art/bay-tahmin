@@ -38,6 +38,8 @@ async def _start_picks_precompute() -> None:
     app.state.sportoto_warm_task = asyncio.create_task(_warm_sportoto())
     from app.services.sportoto_service import SportotoService as _ST
     app.state.sportoto_bulletin_task = asyncio.create_task(_ST(get_analysis_service()).bulletin_loop())
+    from bsd_probe import run_once as _bsd_probe
+    app.state.bsd_probe_task = asyncio.create_task(_bsd_probe())
 
     from app.services.warm_service import warm_loop
     app.state.match_warm_task = asyncio.create_task(warm_loop(get_analysis_service()))
