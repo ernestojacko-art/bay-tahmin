@@ -26,14 +26,21 @@ async def run_once() -> None:
                 r = await c.get(f"{BASE}{path}", params=params)
                 return r.status_code, (r.json() if r.headers.get("content-type", "").startswith("application/json") else r.text[:200])
 
-            code, body = await get("/api/v2/events/", status="upcoming", team_name="Galatasaray", limit=2)
-            out["upcoming"] = [code, _shape(body)]
-            tid = None
-            rows = (body.get("results") if isinstance(body, dict) else None) or []
-            if rows:
-                h = rows[0].get("home_team_obj") or rows[0].get("home_team")
-                tid = (h or {}).get("id") if isinstance(h, dict) else None
-                out["event_keys"] = sorted(rows[0].keys())[:60]
+            from datetime import date, timedelta
+            d0 = date.today()
+            tid, body, off = None, None, 0
+            while tid is None and off < 1000:
+                code, body = await get("/api/v2/events/", date_from=d0.isoformat(), date_to=(d0 + timedelta(days=3)).isoformat(), limit=200, offset=off)
+                rows = (body.get("results") if isinstance(body, dict) else None) or []
+                if not rows:
+                    break
+                for e in rows:
+                    if "galatasaray" in str(e.get("home_team", "")).lower():
+                        tid = e.get("home_team_id")
+                        out["event_keys"] = sorted(e.keys())[:60]
+                        break
+                off += 200
+            out["tid"] = tid
             if tid:
                 code, form = await get(f"/api/v2/teams/{tid}/form/", last=10)
                 out["form"] = [code, _shape(form)]
